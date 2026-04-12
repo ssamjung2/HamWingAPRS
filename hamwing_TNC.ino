@@ -8,14 +8,20 @@
 //
 //  Arduino             HamWing net     DRA818U pin
 //  ─────────────────   ─────────────   ───────────
-//  D0  (Serial RX) ←── TXD  (J5)  ←── TXD
-//  D1  (Serial TX) ──► RXD  (J5)  ──► RXD
-//  D4              ──► PD   (J3)  ──► PD       ← shared with Pi GPIO4 BCM
+//  D2  (SoftSerial RX) ←── TXD  (J5)  ←── TXD
+//  D3  (SoftSerial TX) ──► RXD  (J5)  ──► RXD
+//  D4                  ──► PD   (J3)  ──► PD   ← shared with Pi GPIO4 BCM
 //                                               Released to hi-Z after setup()
 //
-//  NOTE: Arduino D0/D1 are the hardware serial pins and share the USB
-//  programming interface on Uno/Nano.  Disconnect the DRA818 RXD line
-//  while uploading this sketch, then reconnect before power-cycling.
+//  NOTE: The DRA818 UART runs on SoftwareSerial (D2/D3) so that the hardware
+//  Serial port (D0/D1/USB) stays free for IDE Serial Monitor logging.
+//  Rewire J5: DRA818 TXD → D2, DRA818 RXD → D3  (was D0/D1).
+//  Set the Serial Monitor baud rate to 115200.  No wires need to be
+//  disconnected during sketch upload.
+//
+//  Requires the "DRA818" library by Jerome LOYET (fatpat) — install via
+//  Arduino IDE Library Manager: Sketch → Include Library → Manage Libraries
+//  then search for "DRA818" and install.
 //
 // ── Raspberry Pi control lines (NOT driven by this sketch after setup) ───────
 //
@@ -44,6 +50,23 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 
+// Defining DRA818_DEBUG before the include enables the library's built-in
+// AT command trace, which is piped to the Serial Monitor via set_log() below.
+#define DRA818_DEBUG
+#include <DRA818.h>   // install via Library Manager: search "DRA818" by fatpat
+
+// ── Serial ports ─────────────────────────────────────────────────────────────
+// Hardware Serial (D0/D1/USB) is used exclusively for IDE Serial Monitor logging.
+#define LOG_BAUD      115200
+
+// SoftwareSerial carries all DRA818U AT command traffic.
+#define DRA818_RX_PIN  2   // Arduino D2  ←── DRA818 TXD (J5)
+#define DRA818_TX_PIN  3   // Arduino D3  ──► DRA818 RXD (J5)
+#define DRA818_BAUD    9600
+
+SoftwareSerial dra818Serial(DRA818_RX_PIN, DRA818_TX_PIN);
+DRA818        *dra;         // pointer to the library object; created in setup()
+
 // ── Pin assignments ──────────────────────────────────────────────────────────
 
 #define PIN_PD          4   // PD shared with Pi GPIO4 BCM; released to INPUT after setup
@@ -56,14 +79,14 @@
 const float FREQ_TX     = 434.5000;
 const float FREQ_RX     = 434.5000;
 
-// Bandwidth: 0 = 12.5 kHz narrow,  1 = 25 kHz wide
-// Use 25 kHz (wide) for SSTV — the audio spans ~300 Hz to ~2.5 kHz.
-const int BANDWIDTH     = 1;
+// Bandwidth: DRA818_12K5 = 12.5 kHz narrow,  DRA818_25K = 25 kHz wide
+// Use DRA818_25K (wide) for SSTV — the audio spans ~300 Hz to ~2.5 kHz.
+const uint8_t BANDWIDTH = DRA818_25K;
 
-// CTCSS tone code ("0000" = none, "0001"–"0038" = standard tones).
-// Use "0000" for simplex SSTV with no repeater access tone.
-const char* TX_CTCSS    = "0000";
-const char* RX_CTCSS    = "0000";
+// CTCSS tone code: 0 = none, 1–38 = standard CTCSS tones.
+// Use 0 for simplex SSTV with no repeater access tone.
+const uint8_t TX_CTCSS  = 0;
+const uint8_t RX_CTCSS  = 0;
 
 // Squelch level: 0 = open/monitor, 1–8 = increasing threshold.
 // 0 = open squelch is correct for a transmit-only HAB payload.
@@ -82,17 +105,14 @@ const int VOLUME        = 4;
 //
 // For SSTV and FSK data ALL three filters should be OFF to maintain
 // a flat frequency response across the full SSTV audio passband.
-const int FILTER_PRE    = 0;
-const int FILTER_HIGH   = 0;
-const int FILTER_LOW    = 0;
+const bool FILTER_PRE   = false;
+const bool FILTER_HIGH  = false;
+const bool FILTER_LOW   = false;
 
 
 // ── Timing ──────────────────────────────────────────────────────────────────
 
-#define DRA818_BAUD          9600
-#define WAKE_DELAY_MS         200   // wait after PD HIGH before first command
-#define RESPONSE_TIMEOUT_MS  1000   // max ms to wait for each AT response
-#define CMD_SPACING_MS         50   // gap between commands
+#define WAKE_DELAY_MS  200   // wait after PD HIGH before first command
 
 
 // ── Status LED ──────────────────────────────────────────────────────────────
@@ -105,35 +125,8 @@ static bool anyFailed = false;
 
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-// Discard any bytes already in the RX buffer.
-void flushRx() {
-  while (Serial.available()) Serial.read();
-}
-
-// Block until the expected token appears in the response stream, or timeout.
-// Returns true on match, false on timeout.
-bool waitForResponse(const char* expected, unsigned long timeout_ms) {
-  String resp = "";
-  unsigned long start = millis();
-  while (millis() - start < timeout_ms) {
-    if (Serial.available()) {
-      resp += (char)Serial.read();
-      if (resp.indexOf(expected) >= 0) return true;
-    }
-  }
-  return false;
-}
-
-// Send one AT command, wait for expected response, return success flag.
-bool sendCommand(const char* label, const String& cmd, const char* expected) {
-  flushRx();
-  Serial.println(cmd);
-  bool ok = waitForResponse(expected, RESPONSE_TIMEOUT_MS);
-  if (!ok) anyFailed = true;
-  delay(CMD_SPACING_MS);
-  return ok;
-}
+// AT command handling and Serial Monitor logging are provided by the DRA818
+// library.  No manual helpers are needed.
 
 
 // ── setup()  —  runs once at power-up ────────────────────────────────────────
@@ -142,57 +135,92 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
+  Serial.begin(LOG_BAUD);
+  Serial.println(F("\n=============================="));
+  Serial.println(F("[HAMWING] DRA818U programmer"));
+  Serial.println(F("=============================="));
+
   // Wake the DRA818U.  PD must be HIGH before the module accepts any commands.
-  // This must happen BEFORE Serial.begin / AT commands.
+  Serial.println(F("[HAMWING] Waking DRA818U (PD HIGH)..."));
   pinMode(PIN_PD, OUTPUT);
   digitalWrite(PIN_PD, HIGH);
   delay(WAKE_DELAY_MS);
 
-  Serial.begin(DRA818_BAUD);
-  flushRx();
+  Serial.print(F("[HAMWING] Config — TX: "));
+  Serial.print(FREQ_TX, 4);
+  Serial.print(F(" MHz  RX: "));
+  Serial.print(FREQ_RX, 4);
+  Serial.print(F(" MHz  BW: "));
+  Serial.println(BANDWIDTH == DRA818_25K ? F("25 kHz wide") : F("12.5 kHz narrow"));
+  Serial.print(F("[HAMWING] Squelch: "));
+  Serial.print(SQUELCH);
+  Serial.print(F("  Volume: "));
+  Serial.print(VOLUME);
+  Serial.print(F("  CTCSS TX/RX: "));
+  Serial.print(TX_CTCSS);
+  Serial.print('/');
+  Serial.println(RX_CTCSS);
+  Serial.println(F("[HAMWING] DRA818 library AT trace enabled — raw AT traffic shown below."));
+  Serial.println();
 
-  // 1. Handshake — required first; clears the module's command parser state.
-  sendCommand("CONNECT", "AT+DMOCONNECT", "+DMOCONNECT:0");
+  // Initialise the DRA818 library on the SoftwareSerial port.
+  // set_log() pipes the library's AT command trace to the Serial Monitor.
+  dra818Serial.begin(DRA818_BAUD);
+  dra = new DRA818(&dra818Serial, DRA818_UHF);
+  dra->set_log(&Serial);
+
+  // 1. Handshake — required first; confirms two-way comms with the module.
+  //    The library retries up to 3 times with a 2 s timeout each.
+  Serial.println(F("[HAMWING] Step 1/4: Handshake"));
+  if (dra->handshake()) {
+    Serial.println(F("[HAMWING] Handshake OK"));
+  } else {
+    Serial.println(F("[HAMWING] *** Handshake FAILED — check D2<-TXD, D3->RXD wiring and power."));
+    anyFailed = true;
+  }
 
   // 2. Frequency group, bandwidth, CTCSS, squelch.
-  //    BW must be printed as a plain integer (0 or 1), not with a decimal base.
-  String groupCmd = "AT+DMOSETGROUP=";
-  groupCmd += BANDWIDTH;                   // 0 or 1
-  groupCmd += ",";
-  groupCmd += String(FREQ_TX, 4);          // e.g. "434.5000"
-  groupCmd += ",";
-  groupCmd += String(FREQ_RX, 4);
-  groupCmd += ",";
-  groupCmd += TX_CTCSS;                    // 4-character code e.g. "0000"
-  groupCmd += ",";
-  groupCmd += SQUELCH;
-  groupCmd += ",";
-  groupCmd += RX_CTCSS;
-  sendCommand("GROUP", groupCmd, "+DMOSETGROUP:0");
+  Serial.println(F("[HAMWING] Step 2/4: Frequency group, bandwidth, CTCSS, squelch"));
+  if (dra->group(BANDWIDTH, FREQ_TX, FREQ_RX, TX_CTCSS, SQUELCH, RX_CTCSS)) {
+    Serial.println(F("[HAMWING] Group OK"));
+  } else {
+    Serial.println(F("[HAMWING] *** Group FAILED"));
+    anyFailed = true;
+  }
 
   // 3. Audio output volume (does not affect TX deviation).
-  sendCommand("VOLUME",
-    "AT+DMOSETVOLUME=" + String(VOLUME),
-    "+DMOSETVOLUME:0");
+  Serial.println(F("[HAMWING] Step 3/4: Audio volume"));
+  if (dra->volume(VOLUME)) {
+    Serial.println(F("[HAMWING] Volume OK"));
+  } else {
+    Serial.println(F("[HAMWING] *** Volume FAILED"));
+    anyFailed = true;
+  }
 
   // 4. Filters — all OFF preserves flat AF response for SSTV/data.
-  String filterCmd = "AT+DMOSETFILTER=";
-  filterCmd += FILTER_PRE;
-  filterCmd += ",";
-  filterCmd += FILTER_HIGH;
-  filterCmd += ",";
-  filterCmd += FILTER_LOW;
-  sendCommand("FILTER", filterCmd, "+DMOSETFILTER:0");
-
-  // 5. Version query — optional diagnostic; confirms two-way comms.
-  flushRx();
-  Serial.println("AT+DMOVERQ");
-  delay(RESPONSE_TIMEOUT_MS);   // just wait; we don't parse the version string
+  Serial.println(F("[HAMWING] Step 4/4: Filters"));
+  if (dra->filters(FILTER_PRE, FILTER_HIGH, FILTER_LOW)) {
+    Serial.println(F("[HAMWING] Filters OK"));
+  } else {
+    Serial.println(F("[HAMWING] *** Filters FAILED"));
+    anyFailed = true;
+  }
 
   // Release PD to hi-Z so the Raspberry Pi can drive it via BCM GPIO4.
   // If Arduino held it HIGH permanently it would conflict with the Pi
   // asserting LOW to power-down the radio between transmissions.
   pinMode(PIN_PD, INPUT);
+
+  Serial.println(F("[HAMWING] PD released to hi-Z — Raspberry Pi may now take control."));
+  Serial.println();
+  if (anyFailed) {
+    Serial.println(F("[HAMWING] *** RESULT: FAILED — one or more commands did not respond."));
+    Serial.println(F("[HAMWING]     Check: D2 <- DRA818 TXD, D3 -> DRA818 RXD, baud 9600."));
+    Serial.println(F("[HAMWING]     LED: fast blink (5 Hz)."));
+  } else {
+    Serial.println(F("[HAMWING] *** RESULT: OK — all commands acknowledged."));
+    Serial.println(F("[HAMWING]     LED: slow blink (1 Hz)."));
+  }
 }
 
 
