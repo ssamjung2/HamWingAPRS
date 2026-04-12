@@ -30,6 +30,8 @@
 //  GPIO 4    pin  7     PD           Power-down  (HIGH = active, LOW = sleep)
 //  GPIO27    pin 13     PTT          Push-to-talk (LOW = TX keyed)
 //  GPIO22    pin 15     HL           Power level  (LOW = low, HIGH = high)
+//                                   pi_sstv.py initialises HL LOW and never
+//                                   changes it — the payload always runs low power.
 //  GPIO12    pin 32     AudioOut L   PWM audio ──┐
 //  GPIO13    pin 33     AudioOut R   PWM audio ──┴─► RC filter ──► DRA818 mic
 //
@@ -90,15 +92,15 @@ const uint8_t RX_CTCSS  = 0;
 
 // Squelch level: 0 = open/monitor, 1–8 = increasing threshold.
 // 0 = open squelch is correct for a transmit-only HAB payload.
-const int SQUELCH       = 0;
+const uint8_t SQUELCH   = 0;
 
 // Audio output volume: 1 (min) – 8 (max).
 // Controls the DRA818 speaker/line-out output level only.
 // Does NOT affect TX deviation — TX audio level is set by the
 // hardware RC divider (R1/R2) between the Pi and the DRA818 mic input.
-const int VOLUME        = 4;
+const uint8_t VOLUME    = 4;
 
-// Filters: 1 = enabled, 0 = disabled.
+// Filters: true = enabled, false = disabled.
 //   FILTER_PRE:  pre/de-emphasis (designed for voice; rolls off high freqs)
 //   FILTER_HIGH: high-pass filter (cuts sub-300 Hz; removes hum)
 //   FILTER_LOW:  low-pass filter  (cuts above ~3 kHz)
@@ -112,7 +114,12 @@ const bool FILTER_LOW   = false;
 
 // ── Timing ──────────────────────────────────────────────────────────────────
 
-#define WAKE_DELAY_MS  200   // wait after PD HIGH before first command
+// Time to wait after PD goes HIGH before sending the first AT command.
+// 200 ms is sufficient for AT command acceptance; the library also retries
+// the handshake up to 3× so a tight value here is safe.
+// Note: pi_sstv.py uses RADIO_WAKE_DELAY_SECONDS = 1.0 before keying PTT,
+// which is a longer margin appropriate for full TX-carrier readiness.
+#define WAKE_DELAY_MS  200
 
 
 // ── Status LED ──────────────────────────────────────────────────────────────
@@ -171,12 +178,20 @@ void setup() {
 
   // 1. Handshake — required first; confirms two-way comms with the module.
   //    The library retries up to 3 times with a 2 s timeout each.
+  //    If this fails there is no point attempting further commands — bail out
+  //    immediately rather than burning through 3 more retry cycles (~18 s).
   Serial.println(F("[HAMWING] Step 1/4: Handshake"));
   if (dra->handshake()) {
     Serial.println(F("[HAMWING] Handshake OK"));
   } else {
     Serial.println(F("[HAMWING] *** Handshake FAILED — check D2<-TXD, D3->RXD wiring and power."));
     anyFailed = true;
+    // Release PD and report before entering the blink loop.
+    pinMode(PIN_PD, INPUT);
+    Serial.println(F("[HAMWING] PD released to hi-Z."));
+    Serial.println(F("[HAMWING] *** RESULT: FAILED — aborting remaining steps."));
+    Serial.println(F("[HAMWING]     LED: fast blink (5 Hz)."));
+    return;
   }
 
   // 2. Frequency group, bandwidth, CTCSS, squelch.
