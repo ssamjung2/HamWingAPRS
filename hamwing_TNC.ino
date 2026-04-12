@@ -19,9 +19,8 @@
 //  Set the Serial Monitor baud rate to 115200.  No wires need to be
 //  disconnected during sketch upload.
 //
-//  Requires the "DRA818" library by Jerome LOYET (fatpat) — install via
-//  Arduino IDE Library Manager: Sketch → Include Library → Manage Libraries
-//  then search for "DRA818" and install.
+//  No third-party libraries required.  Only the built-in SoftwareSerial
+//  library (included with every Arduino IDE installation) is used.
 //
 // ── Raspberry Pi control lines (NOT driven by this sketch after setup) ───────
 //
@@ -52,10 +51,7 @@
 // ────────────────────────────────────────────────────────────────────────────
 
 
-// Defining DRA818_DEBUG before the include enables the library's built-in
-// AT command trace, which is piped to the Serial Monitor via set_log() below.
-#define DRA818_DEBUG
-#include <DRA818.h>   // install via Library Manager: search "DRA818" by fatpat
+#include <SoftwareSerial.h>
 
 // ── Serial ports ─────────────────────────────────────────────────────────────
 // Hardware Serial (D0/D1/USB) is used exclusively for IDE Serial Monitor logging.
@@ -67,7 +63,6 @@
 #define DRA818_BAUD    9600
 
 SoftwareSerial dra818Serial(DRA818_RX_PIN, DRA818_TX_PIN);
-DRA818        *dra;         // pointer to the library object; created in setup()
 
 // ── Pin assignments ──────────────────────────────────────────────────────────
 
@@ -81,14 +76,15 @@ DRA818        *dra;         // pointer to the library object; created in setup()
 const float FREQ_TX     = 434.5000;
 const float FREQ_RX     = 434.5000;
 
-// Bandwidth: DRA818_12K5 = 12.5 kHz narrow,  DRA818_25K = 25 kHz wide
-// Use DRA818_25K (wide) for SSTV — the audio spans ~300 Hz to ~2.5 kHz.
-const uint8_t BANDWIDTH = DRA818_25K;
+// Bandwidth: 0 = 12.5 kHz narrow,  1 = 25 kHz wide
+// Use 1 (wide) for SSTV — the audio spans ~300 Hz to ~2.5 kHz.
+const uint8_t BANDWIDTH = 1;
 
-// CTCSS tone code: 0 = none, 1–38 = standard CTCSS tones.
-// Use 0 for simplex SSTV with no repeater access tone.
-const uint8_t TX_CTCSS  = 0;
-const uint8_t RX_CTCSS  = 0;
+// CTCSS tone code ("0000" = none, "0001"–"0038" = standard tones).
+// Use "0000" for simplex SSTV with no repeater access tone.
+// Stored as a zero-padded 4-character string to match the AT command format.
+const char TX_CTCSS[5]  = "0000";
+const char RX_CTCSS[5]  = "0000";
 
 // Squelch level: 0 = open/monitor, 1–8 = increasing threshold.
 // 0 = open squelch is correct for a transmit-only HAB payload.
@@ -115,11 +111,13 @@ const bool FILTER_LOW   = false;
 // ── Timing ──────────────────────────────────────────────────────────────────
 
 // Time to wait after PD goes HIGH before sending the first AT command.
-// 200 ms is sufficient for AT command acceptance; the library also retries
-// the handshake up to 3× so a tight value here is safe.
+// 200 ms is sufficient for AT command acceptance; sendCommand() retries on
+// timeout so a tight value here is safe.
 // Note: pi_sstv.py uses RADIO_WAKE_DELAY_SECONDS = 1.0 before keying PTT,
 // which is a longer margin appropriate for full TX-carrier readiness.
-#define WAKE_DELAY_MS  200
+#define WAKE_DELAY_MS         200
+#define RESPONSE_TIMEOUT_MS  2000   // max ms to wait for each AT response
+#define CMD_SPACING_MS         50   // inter-command gap
 
 
 // ── Status LED ──────────────────────────────────────────────────────────────
@@ -132,8 +130,49 @@ static bool anyFailed = false;
 
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-// AT command handling and Serial Monitor logging are provided by the DRA818
-// library.  No manual helpers are needed.
+
+// Discard any stale bytes in the DRA818 receive buffer.
+void flushRx() {
+  while (dra818Serial.available()) dra818Serial.read();
+}
+
+// Block until the expected token appears in the response stream, or timeout.
+// Every received byte is mirrored to the Serial Monitor in real time.
+// Returns true on match, false on timeout.
+bool waitForResponse(const char* expected, unsigned long timeout_ms) {
+  String resp = "";
+  unsigned long start = millis();
+  Serial.print(F("[DRA818] <<< "));
+  while (millis() - start < timeout_ms) {
+    if (dra818Serial.available()) {
+      char c = (char)dra818Serial.read();
+      resp += c;
+      Serial.write(c);  // mirror to Serial Monitor in real time
+      if (resp.indexOf(expected) >= 0) {
+        Serial.println();
+        return true;
+      }
+    }
+  }
+  Serial.println(F("(timeout)"));
+  return false;
+}
+
+// Send one AT command, log it, wait for the expected response token.
+// Returns true on success, false on timeout.
+bool sendCommand(const char* label, const String& cmd, const char* expected) {
+  flushRx();
+  Serial.print(F("[DRA818] >>> "));
+  Serial.println(cmd);
+  dra818Serial.println(cmd);
+  bool ok = waitForResponse(expected, RESPONSE_TIMEOUT_MS);
+  Serial.print('[');
+  Serial.print(label);
+  Serial.println(ok ? F("] OK") : F("] FAILED (no response or unexpected reply)"));
+  if (!ok) anyFailed = true;
+  delay(CMD_SPACING_MS);
+  return ok;
+}
 
 
 // ── setup()  —  runs once at power-up ────────────────────────────────────────
@@ -158,7 +197,7 @@ void setup() {
   Serial.print(F(" MHz  RX: "));
   Serial.print(FREQ_RX, 4);
   Serial.print(F(" MHz  BW: "));
-  Serial.println(BANDWIDTH == DRA818_25K ? F("25 kHz wide") : F("12.5 kHz narrow"));
+  Serial.println(BANDWIDTH == 1 ? F("25 kHz wide") : F("12.5 kHz narrow"));
   Serial.print(F("[HAMWING] Squelch: "));
   Serial.print(SQUELCH);
   Serial.print(F("  Volume: "));
@@ -167,58 +206,61 @@ void setup() {
   Serial.print(TX_CTCSS);
   Serial.print('/');
   Serial.println(RX_CTCSS);
-  Serial.println(F("[HAMWING] DRA818 library AT trace enabled — raw AT traffic shown below."));
+  Serial.println(F("[HAMWING] AT command trace enabled — raw traffic shown below."));
   Serial.println();
 
-  // Initialise the DRA818 library on the SoftwareSerial port.
-  // set_log() pipes the library's AT command trace to the Serial Monitor.
+  // Initialise the SoftwareSerial port to the DRA818U.
   dra818Serial.begin(DRA818_BAUD);
-  dra = new DRA818(&dra818Serial, DRA818_UHF);
-  dra->set_log(&Serial);
+  flushRx();
 
   // 1. Handshake — required first; confirms two-way comms with the module.
-  //    The library retries up to 3 times with a 2 s timeout each.
   //    If this fails there is no point attempting further commands — bail out
-  //    immediately rather than burning through 3 more retry cycles (~18 s).
+  //    immediately.
   Serial.println(F("[HAMWING] Step 1/4: Handshake"));
-  if (dra->handshake()) {
-    Serial.println(F("[HAMWING] Handshake OK"));
-  } else {
-    Serial.println(F("[HAMWING] *** Handshake FAILED — check D2<-TXD, D3->RXD wiring and power."));
-    anyFailed = true;
+  if (!sendCommand("CONNECT", "AT+DMOCONNECT", "+DMOCONNECT:0")) {
     // Release PD and report before entering the blink loop.
     pinMode(PIN_PD, INPUT);
     Serial.println(F("[HAMWING] PD released to hi-Z."));
     Serial.println(F("[HAMWING] *** RESULT: FAILED — aborting remaining steps."));
+    Serial.println(F("[HAMWING]     Check: D2 <- DRA818 TXD, D3 -> DRA818 RXD, power."));
     Serial.println(F("[HAMWING]     LED: fast blink (5 Hz)."));
     return;
   }
 
   // 2. Frequency group, bandwidth, CTCSS, squelch.
+  //    BW must be a plain integer (0 or 1); CTCSS is a 4-character string.
   Serial.println(F("[HAMWING] Step 2/4: Frequency group, bandwidth, CTCSS, squelch"));
-  if (dra->group(BANDWIDTH, FREQ_TX, FREQ_RX, TX_CTCSS, SQUELCH, RX_CTCSS)) {
-    Serial.println(F("[HAMWING] Group OK"));
-  } else {
-    Serial.println(F("[HAMWING] *** Group FAILED"));
-    anyFailed = true;
+  {
+    String groupCmd = "AT+DMOSETGROUP=";
+    groupCmd += BANDWIDTH;
+    groupCmd += ',';
+    groupCmd += String(FREQ_TX, 4);
+    groupCmd += ',';
+    groupCmd += String(FREQ_RX, 4);
+    groupCmd += ',';
+    groupCmd += TX_CTCSS;
+    groupCmd += ',';
+    groupCmd += SQUELCH;
+    groupCmd += ',';
+    groupCmd += RX_CTCSS;
+    sendCommand("GROUP", groupCmd, "+DMOSETGROUP:0");
   }
 
   // 3. Audio output volume (does not affect TX deviation).
   Serial.println(F("[HAMWING] Step 3/4: Audio volume"));
-  if (dra->volume(VOLUME)) {
-    Serial.println(F("[HAMWING] Volume OK"));
-  } else {
-    Serial.println(F("[HAMWING] *** Volume FAILED"));
-    anyFailed = true;
-  }
+  sendCommand("VOLUME", "AT+DMOSETVOLUME=" + String(VOLUME), "+DMOSETVOLUME:0");
 
   // 4. Filters — all OFF preserves flat AF response for SSTV/data.
+  //    AT+DMOSETFILTER=PRE,HIGH,LOW  (1=on, 0=off)
   Serial.println(F("[HAMWING] Step 4/4: Filters"));
-  if (dra->filters(FILTER_PRE, FILTER_HIGH, FILTER_LOW)) {
-    Serial.println(F("[HAMWING] Filters OK"));
-  } else {
-    Serial.println(F("[HAMWING] *** Filters FAILED"));
-    anyFailed = true;
+  {
+    String filterCmd = "AT+DMOSETFILTER=";
+    filterCmd += FILTER_PRE  ? 1 : 0;
+    filterCmd += ',';
+    filterCmd += FILTER_HIGH ? 1 : 0;
+    filterCmd += ',';
+    filterCmd += FILTER_LOW  ? 1 : 0;
+    sendCommand("FILTER", filterCmd, "+DMOSETFILTER:0");
   }
 
   // Release PD to hi-Z so the Raspberry Pi can drive it via BCM GPIO4.
