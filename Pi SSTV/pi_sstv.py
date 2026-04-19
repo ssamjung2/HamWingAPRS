@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 import csv
 import os
 import re
+import textwrap
 import wave
 from typing import List, Optional, Set, Tuple
 import RPi.GPIO as GPIO
@@ -90,16 +91,16 @@ PIC_TOTAL = 500
 # Keep the default gate time-based; operators can still add a hard capture-count
 # floor with --min-captures or the config file when they need it.
 MIN_CAPTURES_BETWEEN_TRANSMISSIONS = 0
-MAX_TRANSMIT_DUTY_CYCLE = 0.35
+MAX_TRANSMIT_DUTY_CYCLE = 0.50
 TX_COOLDOWN_METHOD = "adaptive_dutycycle"
 FIXED_TX_COOLDOWN_SECONDS = 30.0
 COOLDOWN_SCALE_FACTOR = 1.0
 
 # Method choices:
 #   fixed                   : static cooldown in seconds between TX events
-#   adaptive_dutycycle      : cooldown derived from last TX duration and duty target
+#   adaptive_dutycycle      : cooldown derived from last TX duration and duty cycle target
 #   adaptive_avg_dutycycle  : cooldown distributed by each mode's share of the schedule block
-#   estimated               : duty-derived cooldown corrected by simplified thermal/altitude model
+#   estimated               : duty cycle-derived cooldown corrected by simplified thermal/altitude model
 TX_COOLDOWN_METHOD_CHOICES = (
     "fixed",
     "adaptive_dutycycle",
@@ -111,7 +112,7 @@ TX_COOLDOWN_METHOD_CHOICES = (
 DEPRECATED_CONFIG_KEYS = {
     "radio": {
         "rolling_duty_cycle_window_seconds": (
-            "deprecated and ignored; rolling-window duty gating was removed. "
+            "deprecated and ignored; rolling-window duty cycle gating was removed. "
             "Use cooldown_method + max_transmit_duty_cycle + cooldown_scale_factor instead."
         ),
     },
@@ -318,7 +319,7 @@ MODE_PROFILES = {
     "robot8bw": ModeProfile(
         name="robot8bw",
         duration_seconds=8,
-        cooldown_seconds=75,
+        cooldown_seconds=8,
         image_width=160,
         image_height=120,
         requires_mmsstv=True,
@@ -328,7 +329,7 @@ MODE_PROFILES = {
     "robot12bw": ModeProfile(
         name="robot12bw",
         duration_seconds=12,
-        cooldown_seconds=75,
+        cooldown_seconds=12,
         image_width=160,
         image_height=120,
         requires_mmsstv=True,
@@ -338,49 +339,56 @@ MODE_PROFILES = {
     "bw24": ModeProfile(
         name="bw24",
         duration_seconds=24,
-        cooldown_seconds=105,
+        cooldown_seconds=24,
+        image_width=320,
         image_height=120,
         description="Fast monochrome native mode for low duty-cycle updates.",
     ),
     "r36": ModeProfile(
         name="r36",
         duration_seconds=36,
-        cooldown_seconds=135,
+        cooldown_seconds=36,
+        image_width=320,
         image_height=240,
         description="Fast native color mode for regular balloon image updates.",
     ),
     "m2": ModeProfile(
         name="m2",
         duration_seconds=58,
-        cooldown_seconds=210,
+        cooldown_seconds=58,
+        image_width=320,
         image_height=256,
         description="Balanced native mode with good compatibility.",
     ),
     "s2": ModeProfile(
         name="s2",
         duration_seconds=71,
-        cooldown_seconds=255,
+        cooldown_seconds=71,
+        image_width=320,
         image_height=256,
         description="Native Scottie mode with strong compatibility and moderate airtime.",
     ),
     "sdx": ModeProfile(
         name="sdx",
         duration_seconds=269,
-        cooldown_seconds=780,
+        cooldown_seconds=269,
+        image_width=320,
         image_height=256,
         description="Native Scottie DX mode for very high-detail, long-duration snapshots.",
     ),
     "r72": ModeProfile(
         name="r72",
         duration_seconds=72,
-        cooldown_seconds=255,
+        cooldown_seconds=72,
+        image_width=320,
         image_height=240,
         description="Higher-quality native Robot mode.",
     ),
     "pd50": ModeProfile(
         name="pd50",
         duration_seconds=50,
-        cooldown_seconds=210,
+        cooldown_seconds=50,
+        image_width=320,
         image_height=256,
         requires_mmsstv=True,
         fallback_mode="m2",
@@ -389,7 +397,8 @@ MODE_PROFILES = {
     "pd90": ModeProfile(
         name="pd90",
         duration_seconds=90,
-        cooldown_seconds=300,
+        cooldown_seconds=90,
+        image_width=320,
         image_height=256,
         requires_mmsstv=True,
         fallback_mode="r36",
@@ -398,21 +407,23 @@ MODE_PROFILES = {
     "m1": ModeProfile(
         name="m1",
         duration_seconds=114,
-        cooldown_seconds=420,
+        cooldown_seconds=114,
+        image_width=320,
         image_height=256,
         description="High-quality native Martin mode for less frequent transmissions.",
     ),
     "s1": ModeProfile(
         name="s1",
         duration_seconds=110,
-        cooldown_seconds=420,
+        cooldown_seconds=110,
+        image_width=320,
         image_height=256,
         description="Native Scottie high-quality mode for periodic detail shots.",
     ),
     "pd120": ModeProfile(
         name="pd120",
         duration_seconds=120,
-        cooldown_seconds=420,
+        cooldown_seconds=120,
         image_width=640,
         image_height=496,
         requires_mmsstv=True,
@@ -422,7 +433,7 @@ MODE_PROFILES = {
     "pd160": ModeProfile(
         name="pd160",
         duration_seconds=160,
-        cooldown_seconds=540,
+        cooldown_seconds=160,
         image_width=512,
         image_height=400,
         requires_mmsstv=True,
@@ -432,7 +443,7 @@ MODE_PROFILES = {
     "pd180": ModeProfile(
         name="pd180",
         duration_seconds=180,
-        cooldown_seconds=600,
+        cooldown_seconds=180,
         image_width=640,
         image_height=496,
         requires_mmsstv=True,
@@ -442,7 +453,7 @@ MODE_PROFILES = {
     "fax480": ModeProfile(
         name="fax480",
         duration_seconds=180,
-        cooldown_seconds=600,
+        cooldown_seconds=180,
         image_width=512,
         image_height=480,
         requires_mmsstv=True,
@@ -452,7 +463,7 @@ MODE_PROFILES = {
     "pd240": ModeProfile(
         name="pd240",
         duration_seconds=240,
-        cooldown_seconds=720,
+        cooldown_seconds=240,
         image_width=640,
         image_height=496,
         requires_mmsstv=True,
@@ -462,7 +473,7 @@ MODE_PROFILES = {
     "pd290": ModeProfile(
         name="pd290",
         duration_seconds=290,
-        cooldown_seconds=840,
+        cooldown_seconds=290,
         image_width=800,
         image_height=616,
         requires_mmsstv=True,
@@ -598,30 +609,10 @@ def _candidate_protocol_tokens(mode_name: str) -> List[str]:
 
 
 def _tuned_cooldown_for_duration(duration_seconds: int) -> int:
-    """Return moderate cooldown defaults for dynamically discovered modes."""
-    if duration_seconds <= 12:
-        return 75
-    if duration_seconds <= 24:
-        return 105
-    if duration_seconds <= 40:
-        return 135
-    if duration_seconds <= 60:
-        return 210
-    if duration_seconds <= 80:
-        return 255
-    if duration_seconds <= 100:
-        return 300
-    if duration_seconds <= 130:
-        return 420
-    if duration_seconds <= 180:
-        return 600
-    if duration_seconds <= 240:
-        return 720
-    if duration_seconds <= 300:
-        return 840
-    if duration_seconds <= 360:
-        return 960
-    return max(1080, int(round(duration_seconds * 2.8)))
+    """Return baseline per-mode cooldown defaults for dynamically discovered modes."""
+    # Baseline guide: 1:1 cooldown-to-TX time. Runtime cooldown gating logic
+    # (fixed/adaptive/estimated + scale factor) remains authoritative.
+    return max(1, int(round(duration_seconds)))
 
 
 def _default_fallback_mode(duration_seconds: int, is_mono: bool) -> str:
@@ -635,12 +626,105 @@ def _default_fallback_mode(duration_seconds: int, is_mono: bool) -> str:
     return "m1"
 
 
-def _augment_mode_profiles_from_slowframe_output(output: str) -> Tuple[Set[str], Set[str], int]:
-    """Parse slowframe -L output, add missing profiles, and return (native, mmsstv, added_count)."""
+def _is_low_value_mode_description(text: str, code_token: str) -> bool:
+    compact = re.sub(r"[^a-z0-9]+", "", text.lower())
+    if not compact:
+        return True
+    if compact == re.sub(r"[^a-z0-9]+", "", code_token.lower()):
+        return True
+    low_value = {
+        "mode",
+        "sstvmode",
+        "nativemode",
+        "mmsstvmode",
+        "native",
+        "mmsstv",
+        "unknown",
+    }
+    return compact in low_value
+
+
+def _extract_mode_description_hint(raw_line: str, columns: List[str], code_token: str) -> str:
+    # Prefer trailing free-text table column when present.
+    for col in reversed(columns[1:]):
+        col_text = col.strip()
+        if not col_text:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?", col_text):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)?s", col_text.lower()):
+            continue
+        if re.fullmatch(r"\d+x\d+", col_text.lower()):
+            continue
+        if re.fullmatch(r"[a-z0-9_\-/]+", col_text.lower()):
+            continue
+        if _is_low_value_mode_description(col_text, code_token):
+            continue
+        return col_text.rstrip(".")
+
+    # Fallback: strip known tokens from the row and keep meaningful words.
+    candidate = raw_line.strip()
+    candidate = re.sub(rf"^\s*{re.escape(code_token)}\s*(?:[-:|]\s*)?", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\b\d+(?:\.\d+)?s\b", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\b\d+x\d+\b", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\b\d+(?:\.\d+)?\b", "", candidate)
+    candidate = re.sub(r"\s{2,}", " ", candidate).strip(" -|:;")
+    if not candidate or _is_low_value_mode_description(candidate, code_token):
+        return ""
+    return candidate.rstrip(".")
+
+
+def _synthesized_mode_description(
+    canonical: str,
+    is_mmsstv: bool,
+    duration_seconds: int,
+    image_width: int,
+    image_height: Optional[int],
+    is_mono: bool,
+) -> str:
+    if duration_seconds <= 15:
+        pace = "Ultra-fast"
+    elif duration_seconds <= 35:
+        pace = "Very fast"
+    elif duration_seconds <= 60:
+        pace = "Fast"
+    elif duration_seconds <= 110:
+        pace = "Balanced"
+    elif duration_seconds <= 180:
+        pace = "Detailed"
+    elif duration_seconds <= 260:
+        pace = "High-detail"
+    else:
+        pace = "Ultra-detail"
+
+    family = "SSTV"
+    if canonical.startswith("pd"):
+        family = "PD"
+    elif canonical.startswith("robot"):
+        family = "Robot"
+    elif canonical.startswith("fax"):
+        family = "FAX"
+    elif re.fullmatch(r"m\d+", canonical):
+        family = "Martin"
+    elif re.fullmatch(r"s\d+", canonical) or canonical.startswith("sdx"):
+        family = "Scottie"
+    elif canonical.startswith("r"):
+        family = "Robot"
+    elif canonical.startswith("bw"):
+        family = "monochrome"
+
+    color = "monochrome" if is_mono else "color"
+    geometry = f"{image_width}x{image_height}" if image_height is not None else f"{image_width}px-wide"
+    source = "MMSSTV" if is_mmsstv else "native"
+    return f"{pace} {family} {color} mode ({geometry}, ~{duration_seconds}s TX; auto-profiled from slowframe -L {source})."
+
+
+def _augment_mode_profiles_from_slowframe_output(output: str) -> Tuple[Set[str], Set[str], Set[str]]:
+    """Parse slowframe -L output, add missing profiles, and return (native, mmsstv, auto_profiled)."""
     native_modes: Set[str] = set()
     mmsstv_modes: Set[str] = set()
+    auto_profiled_modes: Set[str] = set()
     section: Optional[str] = None
-    added_count = 0
 
     for raw_line in output.splitlines():
         line = raw_line.strip()
@@ -703,7 +787,14 @@ def _augment_mode_profiles_from_slowframe_output(output: str) -> Tuple[Set[str],
             image_width = 320
             image_height = None
 
-        is_mono = ("mono" in lowered) or ("b/w" in code_token)
+        description_hint = _extract_mode_description_hint(raw_line, columns, code_token)
+
+        is_mono = (
+            ("mono" in lowered)
+            or ("b/w" in lowered)
+            or ("bw" in code_token)
+            or canonical.endswith("bw")
+        )
         cooldown_seconds = _tuned_cooldown_for_duration(duration_seconds)
         fallback_mode = _default_fallback_mode(duration_seconds, is_mono)
 
@@ -715,14 +806,25 @@ def _augment_mode_profiles_from_slowframe_output(output: str) -> Tuple[Set[str],
             image_height=image_height,
             requires_mmsstv=is_mmsstv,
             fallback_mode=fallback_mode,
-            description="Discovered from slowframe -L (auto-profiled).",
+            description=(
+                f"{description_hint}."
+                if description_hint
+                else _synthesized_mode_description(
+                    canonical,
+                    is_mmsstv,
+                    duration_seconds,
+                    image_width,
+                    image_height,
+                    is_mono,
+                )
+            ),
         )
-        added_count += 1
+        auto_profiled_modes.add(canonical)
 
-    return native_modes, mmsstv_modes, added_count
+    return native_modes, mmsstv_modes, auto_profiled_modes
 
 
-def refresh_mode_profiles_from_slowframe() -> Tuple[Set[str], Set[str], int]:
+def refresh_mode_profiles_from_slowframe() -> Tuple[Set[str], Set[str], Set[str]]:
     """Run slowframe -L and augment MODE_PROFILES with discovered mode entries."""
     list_cmd = [SLOWFRAME_BIN, "-L"]
     if SLOWFRAME_VERBOSE:
@@ -737,57 +839,78 @@ def refresh_mode_profiles_from_slowframe() -> Tuple[Set[str], Set[str], int]:
     output = "\n".join(filter(None, [result.stdout, result.stderr]))
     return _augment_mode_profiles_from_slowframe_output(output)
 
-TRANSMIT_SCHEDULE_PROFILE = "hab_cruise"
+TRANSMIT_SCHEDULE_PROFILE = "standard"
 BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
-    # hab_climb: absolute maximum update rate, mono-heavy — steepest part of the climb.
-    "hab_climb": (
-        "robot8bw",
+    # mono: Monochrome status-only for maximum update frequency.
+    "mono": (
         "robot12bw",
         "bw24",
-        "r36",
+    ),
+    # rapid: Fast color + status filler for frequent imaging.
+    "rapid": (
         "robot12bw",
         "r36",
     ),
-    # hab_rapid: fast color rotation with short cooldowns — upper ascent / release phase.
-    "hab_rapid": (
-        "robot12bw",
-        "r36",
-        "robot12bw",
+    # standard: Balanced quality and frequency (default).
+    "standard": (
         "r36",
         "pd50",
+        "pd90",
     ),
-    # hab_cruise: balanced default — mixes status frames and quality shots across the full flight.
-    "hab_cruise": (
-        "robot12bw",
+    # quality: Medium-quality color with longer cooldown budgets.
+    "quality": (
+        "pd50",
+        "pd120",
+    ),
+    # high-res: Highest quality detailed imagery.
+    "high-res": (
+        "pd120",
+        "pd290",
+    ),
+    # native-rapid: Fast native-only rotation; no MMSSTV dependency.
+    "native-rapid": (
+        "bw24",
+        "r36",
+    ),
+    # native-balanced: General native-only mission profile; no MMSSTV dependency.
+    "native-balanced": (
         "r36",
         "m2",
-        "pd120",
         "s2",
-        "robot12bw",
-        "m1",
-        "pd120",
     ),
-    # hab_float: quality-first — anchored by PD modes for float altitude and science windows.
-    "hab_float": (
-        "r36",
-        "pd90",
-        "robot12bw",
-        "pd120",
-        "robot12bw",
-        "pd180",
-        "r36",        
-        "pd290",
+    # native-detail: Higher-detail native-only rotation; no MMSSTV dependency.
+    "native-detail": (
+        "r72",
+        "m1",
+        "s1",
     ),
 }
 BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS = {
-    "hab_climb":  "Maximum update-rate profile. Monochrome frames dominate to minimise cooldown "
-                  "gaps during the steepest part of the climb.",
-    "hab_rapid":  "Short bursts + one PD color shot per rotation. Tuned for higher throughput "
-                  "at low-power TX with improved thermal margins.",
-    "hab_cruise": "Balanced default with periodic PD120 quality updates. Tuned for sustained "
-                  "operations at 0.5 W with moderate thermal headroom.",
-    "hab_float":  "Quality-first rotation including PD290 opportunities. Best with added "
-                  "heatsinking and continuous thermal monitoring.",
+    "mono":     "Monochrome status updates only, with 36 seconds TX per rotation. Estimated cooldown "
+                                "is computed from the active cooldown method and duty cycle settings at runtime. Best when "
+                "you need the highest update frequency.",
+    "rapid":    "Fast color plus status framing with 48 seconds TX per rotation. Estimated cooldown "
+                                "is computed from the active cooldown method and duty cycle settings at runtime. Good balance "
+                "of image cadence and color detail.",
+    "standard": "Balanced quality and frequency (default), with 176 seconds TX per 3-mode rotation. "
+                                "Estimated cooldown is computed from the active cooldown method and duty cycle settings at runtime. "
+                "Recommended for general operation.",
+    "quality":  "Quality-focused color imaging with 170 seconds TX per rotation. Estimated cooldown "
+                                "is computed from the active cooldown method and duty cycle settings at runtime. Use when you "
+                "want stronger image detail without committing to maximum-resolution cadence.",
+    "high-res": "Maximum detail imaging with 410 seconds TX per rotation. Estimated cooldown is "
+                                "computed from the active cooldown method and duty cycle settings at runtime. Use when "
+                "high-resolution frames are prioritized over update rate.",
+    "native-rapid": "Native-only rapid imaging with 60 seconds TX per rotation (bw24 + r36). "
+                                        "Estimated cooldown is computed from the active cooldown method and duty cycle settings "
+                    "at runtime. Use when MMSSTV is unavailable and frequent updates are required.",
+    "native-balanced": "Native-only balanced imaging with 165 seconds TX per 3-mode rotation "
+                       "(r36 + m2 + s2). Estimated cooldown is computed from the active cooldown "
+                                             "method and duty cycle settings at runtime. Good default when you want color quality "
+                       "without MMSSTV library dependence.",
+    "native-detail": "Native-only higher-detail imaging with 296 seconds TX per 3-mode rotation "
+                     "(r72 + m1 + s1). Estimated cooldown is computed from the active cooldown method "
+                                         "and duty cycle settings at runtime. Use when prioritizing native image detail over cadence.",
 }
 BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES = {
     name: None for name in BUILTIN_TRANSMIT_SCHEDULE_PROFILES
@@ -803,7 +926,7 @@ TRANSMIT_SCHEDULE_FALLBACK_MODES = dict(BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES
 
 TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(
     TRANSMIT_SCHEDULE_PROFILE,
-    TRANSMIT_SCHEDULE_PROFILES["hab_cruise"],
+    TRANSMIT_SCHEDULE_PROFILES["standard"],
 )
 
 
@@ -852,12 +975,42 @@ _validate_schedule_profiles()
 
 def generate_default_config(path: str):
     """Write a fully-commented default configuration file to *path*."""
+    comment_width = 78
     schedules = ", ".join(TRANSMIT_SCHEDULE_PROFILES.keys())
+    available_prefix = "# Available presets: "
+    available_continuation = "#                    "
+    available_wrapped = textwrap.wrap(
+        schedules,
+        width=max(20, comment_width - len(available_prefix)),
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    available_lines: List[str] = []
+    for idx, line in enumerate(available_wrapped):
+        prefix = available_prefix if idx == 0 else available_continuation
+        available_lines.append(f"{prefix}{line}")
+    available_presets_block = "\n".join(available_lines)
+
     builtin_schedule_lines: List[str] = []
     for schedule_name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items():
         description = BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS.get(schedule_name, "")
-        builtin_schedule_lines.append(f"#   {schedule_name:<10} - {description}")
-        builtin_schedule_lines.append(f"#               {' -> '.join(modes)}")
+        default_marker = " (default)" if schedule_name == "standard" else ""
+        summary_prefix = f"#   {schedule_name:<16} - "
+        summary_continuation = "#                    "
+        summary_text = f"{description}{default_marker}".strip()
+        summary_wrapped = textwrap.wrap(
+            summary_text,
+            width=max(20, comment_width - len(summary_prefix)),
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        if summary_wrapped:
+            builtin_schedule_lines.append(f"{summary_prefix}{summary_wrapped[0]}")
+            for wrapped_line in summary_wrapped[1:]:
+                builtin_schedule_lines.append(f"{summary_continuation}{wrapped_line}")
+        else:
+            builtin_schedule_lines.append(summary_prefix.rstrip())
+        builtin_schedule_lines.append(f"#                    {' -> '.join(modes)}")
     builtin_schedule_block = "\n".join(builtin_schedule_lines)
     GPS_ENABLED_STR = "true" if GPS_ENABLED else "false"
     content = f"""\
@@ -876,7 +1029,7 @@ def generate_default_config(path: str):
 #
 # For detailed documentation on any section, run:
 #   python3 pi_sstv.py --explain <topic>
-#   Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging
+#   Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging  env
 # =============================================================================
 
 
@@ -907,7 +1060,7 @@ def generate_default_config(path: str):
 [mission]
 
 # Transmit schedule preset.  Controls which SSTV modes are used in rotation.
-# Available presets: {schedules}
+{available_presets_block}
 # Built-in preset details:
 {builtin_schedule_block}
 # Additional custom presets may be added with [schedule_profile <name>] sections below.
@@ -962,7 +1115,7 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 # Full example custom profile with its own default override:
 # [schedule_profile custom]
 # modes = robot12bw, r36, pd50, pd90
-# description = Operator-defined mixed rapid schedule.
+# description = Operator-defined mixed cadence profile.
 # unavailable_mode_fallback = m2
 
 
@@ -1330,26 +1483,71 @@ def load_config(path: str):
     def _str(section, key, default):
         return cfg.get(section, key, fallback=default)
 
+    def _scalar_value_for_parse(section: str, key: str):
+        """Return a normalized single-line scalar config value, or None if unset.
+
+        This guards against accidental INI continuation lines being appended to
+        scalar fields (e.g. baud rate), which otherwise causes parse failures.
+        """
+        raw_value = cfg.get(section, key, fallback=None)
+        if raw_value is None:
+            return None
+
+        lines = [line.strip() for line in raw_value.splitlines() if line.strip()]
+        if not lines:
+            return ""
+
+        primary = lines[0]
+        for comment_marker in ("#", ";"):
+            marker_index = primary.find(comment_marker)
+            if marker_index >= 0:
+                primary = primary[:marker_index].strip()
+
+        if len(lines) > 1:
+            print(
+                f"WARNING: Config [{section}] {key} has trailing continuation lines; "
+                f"using first line value '{primary}'",
+                file=sys.stderr,
+            )
+
+        return primary
+
     def _int(section, key, default):
+        value = _scalar_value_for_parse(section, key)
+        if value is None:
+            return default
         try:
-            return cfg.getint(section, key, fallback=default)
+            return int(value, 10)
         except ValueError as exc:
             print(f"Config [{section}] {key}: invalid integer — {exc}", file=sys.stderr)
             sys.exit(1)
 
     def _float(section, key, default):
+        value = _scalar_value_for_parse(section, key)
+        if value is None:
+            return default
         try:
-            return cfg.getfloat(section, key, fallback=default)
+            return float(value)
         except ValueError as exc:
             print(f"Config [{section}] {key}: invalid float — {exc}", file=sys.stderr)
             sys.exit(1)
 
     def _bool(section, key, default):
-        try:
-            return cfg.getboolean(section, key, fallback=default)
-        except ValueError as exc:
-            print(f"Config [{section}] {key}: invalid boolean (use true/false) — {exc}", file=sys.stderr)
-            sys.exit(1)
+        value = _scalar_value_for_parse(section, key)
+        if value is None:
+            return default
+
+        normalized = value.strip().lower()
+        if normalized in ("1", "yes", "true", "on"):
+            return True
+        if normalized in ("0", "no", "false", "off"):
+            return False
+
+        print(
+            f"Config [{section}] {key}: invalid boolean (use true/false) — '{value}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # [paths]
     TIMESTAMPED_DIR   = _str("paths", "output_dir",  TIMESTAMPED_DIR)
@@ -2275,27 +2473,27 @@ SSTV mode reference.  All durations are approximate over-the-air TX times.
 
 Native modes (no MMSSTV library required):
     Name         TX (s)   Cooldown (s)   WxH       Description
-    bw24             24            105   320x120   Fast monochrome, low duty-cycle updates
-    r36              36            135   320x240   Fast native color, regular updates
-    m2               58            210   320x256   Balanced, strong compatibility
-    s2               71            255   320x256   Scottie 2, good compatibility
-    r72              72            255   320x240   Higher-quality Robot color
-    s1              110            420   320x256   Scottie 1, best native quality
-    m1              114            420   320x256   Martin 1, high-quality, less frequent
-    sdx             269            780   320x256   Scottie DX, long-duration high-detail native mode
+    bw24             24             24   320x120   Fast monochrome, low duty-cycle updates
+    r36              36             36   320x240   Fast native color, regular updates
+    m2               58             58   320x256   Balanced, strong compatibility
+    s2               71             71   320x256   Scottie 2, good compatibility
+    r72              72             72   320x240   Higher-quality Robot color
+    s1              110            110   320x256   Scottie 1, best native quality
+    m1              114            114   320x256   Martin 1, high-quality, less frequent
+    sdx             269            269   320x256   Scottie DX, long-duration high-detail native mode
 
 Curated MMSSTV library modes (require libsstv_encoder.so; additional modes may be auto-profiled from slowframe -L):
     Name         TX (s)   Cooldown (s)   WxH       Fallback   Description
-    robot8bw          8             75   160x120   bw24       Ultra-fast monochrome status frame
-    robot12bw        12             75   160x120   bw24       Very fast monochrome
-    pd50             50            210   320x256   m2         Fast PD color
-    pd90             90            300   320x256   r36        Popular fast color
-    pd120           120            420   640x496   m1         Higher-quality, larger image
-    pd160           160            540   512x400   m1         Slower quality mode
-    pd180           180            600   640x496   m1         High-detail mission snapshot
-    fax480          180            600   512x480   m1         High-detail, test windows
-    pd240           240            720   640x496   m1         Very high quality PD mode
-    pd290           290            840   800x616   pd180      Highest quality PD mode
+    robot8bw          8              8   160x120   bw24       Ultra-fast monochrome status frame
+    robot12bw        12             12   160x120   bw24       Very fast monochrome
+    pd50             50             50   320x256   m2         Fast PD color
+    pd90             90             90   320x256   r36        Popular fast color
+    pd120           120            120   640x496   m1         Higher-quality, larger image
+    pd160           160            160   512x400   m1         Slower quality mode
+    pd180           180            180   640x496   m1         High-detail mission snapshot
+    fax480          180            180   512x480   m1         High-detail, test windows
+    pd240           240            240   640x496   m1         Very high quality PD mode
+    pd290           290            290   800x616   pd180      Highest quality PD mode
 
 Mode geometry
     Each mode encodes at a nominal raster width and height. SlowFrame scales the
@@ -2333,29 +2531,48 @@ TOPIC: schedule
 ===============
 During a HAB mission the script transmits on a rotating schedule of SSTV modes
 rather than always using the same mode.  This varies image quality, duty cycle,
-and receiver-side interest across the flight.
+and transmission frequency for different operational needs.
 
 Presets
-    hab_climb    robot8bw -> robot12bw -> bw24 -> r36 -> robot12bw -> r36
-               Maximum update rate.  Monochrome-heavy to keep cooldowns short
-               during the steepest part of the climb.
+    mono            robot12bw -> bw24
+               MMSSTV fast monochrome status profile (36s TX per cycle).
+               Best when update rate matters more than image detail.
 
-    hab_rapid    robot12bw -> r36 -> r36 -> robot12bw -> r36 -> pd50
-               Fast color bursts.  Best for upper ascent and the release phase
-               where update rate still matters but color shots are welcome.
+    rapid           robot12bw -> r36
+               MMSSTV + native mixed fast-update profile (48s TX per cycle).
+               Good for frequent updates with some color detail.
 
-    hab_cruise   robot12bw -> r36 -> m2 -> pd90 -> s2 -> r72 -> m1 -> pd120  (default)
-               Mixes fast status frames with progressively higher-quality
-               images.  Good all-round choice for the full flight envelope.
+    standard        r36 -> pd50 -> pd90  (default)
+               Balanced MMSSTV profile (176s TX per cycle).
+               Recommended starting point for general mission operation.
 
-    hab_float    r36 -> pd90 -> robot12bw -> pd120 -> robot12bw -> pd180 -> pd240 -> pd290
-               Quality-first.  Anchored by PD modes for float altitude or
-               slow-drift science windows.  Requires MMSSTV library; falls
-               back gracefully if unavailable.
+    quality         pd50 -> pd120
+               Quality-focused MMSSTV profile (170s TX per cycle).
+               Use when image detail is prioritized over fast cadence.
+
+    high-res        pd120 -> pd290
+               Maximum-detail MMSSTV profile (410s TX per cycle).
+               Use when high resolution is the top priority.
+
+    native-rapid    bw24 -> r36
+               Native-only rapid profile (60s TX per cycle).
+               Use when MMSSTV library is unavailable.
+
+    native-balanced r36 -> m2 -> s2
+               Native-only balanced profile (165s TX per cycle).
+               Best native default for mixed cadence/detail.
+
+    native-detail   r72 -> m1 -> s1
+               Native-only detail profile (296s TX per cycle).
+               Native choice when higher detail is needed.
 
 Selecting a preset
-  python3 pi_sstv.py --schedule hab_rapid
-  python3 pi_sstv.py --schedule hab_float --mmsstv-lib /path/to/libsstv_encoder.so
+  python3 pi_sstv.py --schedule rapid
+  python3 pi_sstv.py --schedule quality
+  python3 pi_sstv.py --schedule high-res
+    python3 pi_sstv.py --schedule native-rapid
+    python3 pi_sstv.py --schedule native-balanced
+    python3 pi_sstv.py --schedule native-detail
 
 Custom schedule profiles in config
     Config files may define additional profiles with sections named:
@@ -2363,8 +2580,8 @@ Custom schedule profiles in config
 
     Example:
         [schedule_profile custom]
-        modes = robot12bw, r36, pd50, pd90
-        description = Operator-defined mixed rapid schedule.
+        modes = r36, pd50, pd90
+        description = Operator-defined mixed schedule.
         unavailable_mode_fallback = r36
 
     Then select it with:
@@ -2391,14 +2608,14 @@ Cooldown methods
 
     --cooldown-method adaptive_dutycycle
             Uses the previous TX duration and --duty-cycle to compute cooldown:
-            cooldown = tx_duration * ((1-duty)/duty)
+            cooldown = tx_duration * ((1-duty_cycle)/duty_cycle)
 
     --cooldown-method adaptive_avg_dutycycle
             Uses each mode's TX-duration share of the current schedule block and
             --duty-cycle to distribute cooldown across the schedule profile.
 
     --cooldown-method estimated
-            Starts with adaptive duty cooldown and applies a thermal multiplier based
+            Starts with adaptive duty cycle cooldown and applies a thermal multiplier based
             on TX power, PCB/air heat-transfer assumptions, and altitude phase.
             Altitude phase is estimated using --estimated-flight-minutes and
             --estimated-freefall-minutes.
@@ -2415,11 +2632,14 @@ Duty-cycle protection
                                                     transmissions. Default: {min_captures}.
 
 EXAMPLES
-  Fast-color schedule, 200 captures, 8-second intervals:
-    python3 pi_sstv.py --schedule hab_rapid --total 200 --interval 8
+  Rapid status updates with frequent color:
+    python3 pi_sstv.py --schedule rapid --total 200 --interval 8
 
-  Float schedule with conservative thermal protection:
-    python3 pi_sstv.py --schedule hab_float --cooldown-scale 1.5
+  Quality-focused with conservative thermal protection:
+    python3 pi_sstv.py --schedule quality --cooldown-scale 1.5
+
+  Maximum resolution detailed imagery:
+    python3 pi_sstv.py --schedule high-res --cooldown-scale 1.5 --fixed-cooldown-seconds 1000
 
   Inspect all presets and their mode sequences:
     python3 pi_sstv.py --list-schedules
@@ -2663,6 +2883,128 @@ SEE ALSO
   --explain capture   Capture stage status messages
   --explain encode    Encode stage status messages
   --explain tx        TX stage status messages
+    --explain env       Environment variable reference and precedence
+""",
+
+        "env": """\
+TOPIC: env
+==========
+Environment variables supported by pi_sstv.py.
+
+These are read at startup and can be overridden by CLI flags or config values
+depending on the setting.
+
+MMSSTV library control
+    MMSSTV_LIB_PATH
+        Purpose:
+            Explicit path to libsstv_encoder.so used by SlowFrame MMSSTV modes.
+        Equivalent CLI/config:
+            --mmsstv-lib PATH
+            [mmsstv] lib_path = PATH
+        Notes:
+            Use the unversioned symlink path (libsstv_encoder.so), not a versioned
+            SONAME file.
+
+    SLOWFRAME_NO_MMSSTV
+        Purpose:
+            Force native-only operation by disabling MMSSTV mode usage.
+        Equivalent CLI/config:
+            --no-mmsstv
+            [mmsstv] disable = true
+        Accepted values:
+            Any non-empty value enables disable behavior (commonly: 1).
+
+ALSA playback and mixer guardrails
+    PI_SSTV_ALSA_DEVICE
+        Purpose:
+            Force one playback PCM device instead of auto-select.
+        Equivalent CLI:
+            --alsa-playback-device DEVICE
+        Example:
+            plughw:Headphones,0
+
+    PI_SSTV_ALSA_MIXER_DEVICE
+        Purpose:
+            Select target card/device for amixer control operations.
+        Equivalent CLI:
+            --alsa-mixer-device DEVICE
+
+    PI_SSTV_ALSA_MIXER_CONTROL
+        Purpose:
+            Mixer control name used for volume guardrails.
+        Equivalent CLI:
+            --alsa-mixer-control CONTROL
+        Default:
+            PCM
+
+    PI_SSTV_ALSA_TARGET_VOLUME
+        Purpose:
+            Guardrail target volume percent.
+        Equivalent CLI:
+            --alsa-target-volume PERCENT
+        Default:
+            70
+
+    PI_SSTV_ALSA_MAX_SAFE_VOLUME
+        Purpose:
+            Warning threshold percent for "too loud" mixer settings.
+        Equivalent CLI:
+            --alsa-max-safe-volume PERCENT
+        Default:
+            85
+
+    PI_SSTV_ALSA_ENFORCE_VOLUME
+        Purpose:
+            Enable/disable mixer guardrail enforcement.
+        Equivalent CLI:
+            --alsa-no-enforce-volume (disables enforcement)
+        Accepted true values:
+            1, true, yes, on
+        Default:
+            enabled
+
+    PI_SSTV_APLAY_TIMEOUT_SECONDS
+        Purpose:
+            Base timeout for aplay execution.
+        Equivalent CLI:
+            --aplay-timeout SECONDS
+        Default:
+            360
+
+    PI_SSTV_APLAY_TIMEOUT_MARGIN_SECONDS
+        Purpose:
+            Extra timeout margin added on top of base/runtime duration estimates.
+        Equivalent CLI:
+            --aplay-timeout-margin SECONDS
+        Default:
+            45
+
+Precedence model
+    In general:
+        CLI flags > config file > environment variable > built-in default
+    Notes:
+        - MMSSTV vars may be set from config/CLI before capability discovery.
+        - ALSA env vars provide startup defaults and are superseded by CLI options.
+
+EXAMPLES
+    Use explicit MMSSTV library path for one command:
+        MMSSTV_LIB_PATH=/opt/mmsstv/lib/libsstv_encoder.so \\
+            python3 pi_sstv.py --test pd90 --no-tx
+
+    Disable MMSSTV globally for a shell session:
+        export SLOWFRAME_NO_MMSSTV=1
+        python3 pi_sstv.py --list-modes
+
+    Set ALSA guardrails via environment:
+        export PI_SSTV_ALSA_DEVICE=plughw:Headphones,0
+        export PI_SSTV_ALSA_TARGET_VOLUME=70
+        export PI_SSTV_ALSA_MAX_SAFE_VOLUME=85
+        python3 pi_sstv.py --alsa-volume-check
+
+SEE ALSO
+    --explain mmsstv   MMSSTV library behavior and fallback chain
+    --explain tx       Radio TX timing and playback path
+    --explain logging  Runtime log outputs and diagnostics
 """,
 }
 
@@ -2686,7 +3028,13 @@ HELP_TOPIC_ALIASES = {
     "wiring":   "gpio",
     "log":      "logging",
     "debug":    "logging",
-    "duty":     "schedule",
+    "env":      "env",
+    "environment": "env",
+    "vars":     "env",
+    "variables": "env",
+    "duty-cycle": "schedule",
+    "dutycycle": "schedule",
+    "duty_cycle": "schedule",
     "cooldown": "schedule",
 }
 
@@ -2700,6 +3048,7 @@ HELP_TOPIC_ORDER = [
     "tx",
     "gpio",
     "logging",
+    "env",
 ]
 
 HELP_TOPIC_SUMMARIES = {
@@ -2712,6 +3061,7 @@ HELP_TOPIC_SUMMARIES = {
     "tx": "Radio GPIO sequence, timing, and aplay transmit path",
     "gpio": "Pin mapping and wiring reference",
     "logging": "Log levels, framed stage output, and log file options",
+    "env": "Supported environment variables, defaults, and override precedence",
 }
 
 EXPLAIN_TOPIC_GUIDES = {
@@ -2818,13 +3168,14 @@ EXPLAIN_TOPIC_GUIDES = {
         ],
         "checklist": [
             "Run --list-schedules",
-            "Pick preset for ascent/cruise/float phase",
+            "Pick preset by detail/cadence and MMSSTV availability",
             "Select cooldown method (fixed/adaptive/estimated)",
             "Tune duty-cycle and cooldown-scale before flight",
         ],
         "commands": [
             "python3 pi_sstv.py --list-schedules",
-            "python3 pi_sstv.py --schedule hab_rapid --total 200 --interval 8",
+            "python3 pi_sstv.py --schedule rapid --total 200 --interval 8",
+            "python3 pi_sstv.py --schedule native-balanced --total 200 --interval 8",
         ],
     },
     "tx": {
@@ -2876,6 +3227,24 @@ EXPLAIN_TOPIC_GUIDES = {
         "commands": [
             "python3 pi_sstv.py --debug --log-file /home/pi-user/mission.log",
             "python3 pi_sstv.py --quiet-log-file /home/pi-user/mission.log",
+        ],
+    },
+    "env": {
+        "when": "Set runtime defaults from shell/systemd without editing config files.",
+        "flags": ["--mmsstv-lib PATH", "--no-mmsstv", "--alsa-*", "--aplay-timeout*"],
+        "failures": [
+            "MMSSTV library path points to a missing or versioned .so file",
+            "unexpected ALSA device/mixer settings from inherited environment",
+        ],
+        "checklist": [
+            "List and verify shell environment values before launch",
+            "Confirm CLI flags override environment defaults as expected",
+            "Validate MMSSTV and ALSA behavior with focused test commands",
+        ],
+        "commands": [
+            "python3 pi_sstv.py --explain env",
+            "MMSSTV_LIB_PATH=/path/to/libsstv_encoder.so python3 pi_sstv.py --test pd90 --no-tx",
+            "PI_SSTV_ALSA_DEVICE=plughw:Headphones,0 python3 pi_sstv.py --alsa-volume-check",
         ],
     },
 }
@@ -2960,8 +3329,9 @@ def print_help_examples():
         "================\n"
         "Mission runs (config + presets)\n"
         "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
-        "  python3 pi_sstv.py --schedule hab_rapid --callsign W1AW-11 --total 200 --interval 8\n"
-        "  python3 pi_sstv.py --schedule hab_float --mmsstv-lib /path/to/libsstv_encoder.so\n"
+        "  python3 pi_sstv.py --schedule rapid --callsign W1AW-11 --total 200 --interval 8\n"
+        "  python3 pi_sstv.py --schedule quality --mmsstv-lib /path/to/libsstv_encoder.so\n"
+        "  python3 pi_sstv.py --schedule native-balanced --callsign W1AW-11\n"
         "\n"
         "Radio-aware mission examples\n"
         "  # VHF only (default):\n"
@@ -2987,8 +3357,8 @@ def print_help_examples():
         "  python3 pi_sstv.py --alsa-playback-device plughw:Headphones,0 --test r36 --no-tx\n"
         "\n"
         "Duty-cycle / thermal tuning examples\n"
-        "  python3 pi_sstv.py --schedule hab_cruise --cooldown-scale 1.5 --duty-cycle 0.20\n"
-        "  python3 pi_sstv.py --schedule hab_rapid --cooldown-scale 0.8 --min-captures 8\n"
+        "  python3 pi_sstv.py --schedule standard --cooldown-scale 1.5 --duty-cycle 0.20\n"
+        "  python3 pi_sstv.py --schedule rapid --cooldown-scale 0.8 --min-captures 8\n"
         "\n"
         "GPS overlay examples\n"
         "  python3 pi_sstv.py --gps --gps-device /dev/serial0 --gps-baud 9600 --test r36 --no-tx\n"
@@ -3005,6 +3375,7 @@ def print_help_examples():
         "  python3 pi_sstv.py --explain mmsstv\n"
         "  python3 pi_sstv.py --explain schedule\n"
         "  python3 pi_sstv.py --explain tx\n"
+        "  python3 pi_sstv.py --explain env\n"
     )
 
 
@@ -3049,7 +3420,7 @@ def print_help_flight():
         "G) Mission profile review\n"
         f"  [ ] Schedule preset reviewed (current default: {TRANSMIT_SCHEDULE_PROFILE})\n"
         f"  [ ] Capture cadence reviewed (interval={PIC_INTERVAL}s, total={PIC_TOTAL})\n"
-        f"  [ ] Duty/cooldown reviewed (duty={int(MAX_TRANSMIT_DUTY_CYCLE * 100)}%, cooldown-scale={COOLDOWN_SCALE_FACTOR}x)\n"
+        f"  [ ] Duty cycle/cooldown reviewed (duty cycle={int(MAX_TRANSMIT_DUTY_CYCLE * 100)}%, cooldown-scale={COOLDOWN_SCALE_FACTOR}x)\n"
         f"  [ ] Minimum captures between TX reviewed (min-captures={MIN_CAPTURES_BETWEEN_TRANSMISSIONS})\n"
         "\n"
         "H) Ready-to-launch commands\n"
@@ -3186,7 +3557,7 @@ def parse_args(argv: Optional[List[str]] = None):
         default=None,
         help=(
             "Print structured operator guidance plus detailed reference for a pipeline topic and exit. "
-            "Topics: capture, encode, overlay, mmsstv, modes, schedule, tx, gpio, logging. "
+            "Topics: capture, encode, overlay, mmsstv, modes, schedule, tx, gpio, logging, env. "
             "Aliases are accepted (e.g. camera, radio, lib, wiring). "
             "Example: python3 pi_sstv.py --explain mmsstv"
         ),
@@ -3748,25 +4119,29 @@ def list_modes():
     native = set(get_native_modes())
     mmsstv = set()
     try:
-        discovered_native, discovered_mmsstv, added_count = refresh_mode_profiles_from_slowframe()
+        discovered_native, discovered_mmsstv, auto_profiled_modes = refresh_mode_profiles_from_slowframe()
         if discovered_native:
             native.update(discovered_native)
         mmsstv = discovered_mmsstv
-        if added_count:
-            print(f"Discovered {added_count} additional mode profile(s) from SlowFrame.")
+        if auto_profiled_modes:
+            print(f"Discovered {len(auto_profiled_modes)} additional mode profile(s) from SlowFrame.")
     except Exception:
         # Keep list output available even when SlowFrame is unavailable.
         pass
 
-    header = f"{'Name':<12}  {'TX (s)':>6}  {'Cooldown (s)':>12}  {'MMSSTV':>6}  {'Fallback':<10}  Description"
+    header = (
+        f"{'Name':<12}  {'TX (s)':>6}  {'Cooldown (s)':>12}  {'WxH':<10}  "
+        f"{'MMSSTV':>6}  {'Fallback':<10}  Description"
+    )
     print(header)
     print("-" * len(header))
     for name, profile in sorted(MODE_PROFILES.items(), key=lambda x: x[1].duration_seconds):
         mmsstv_flag = "yes" if profile.requires_mmsstv else "no"
         fallback = profile.fallback_mode or "-"
+        geometry = f"{profile.image_width}x{profile.image_height}" if profile.image_height else f"{profile.image_width}x-"
         print(
             f"{profile.name:<12}  {profile.duration_seconds:>6}  {profile.cooldown_seconds:>12}"
-            f"  {mmsstv_flag:>6}  {fallback:<10}  {profile.description}"
+            f"  {geometry:<10}  {mmsstv_flag:>6}  {fallback:<10}  {profile.description}"
         )
     native_names = ", ".join(sorted(native))
     print(f"\nNative modes (no MMSSTV library required): {native_names}")
@@ -3775,72 +4150,177 @@ def list_modes():
 
 
 def list_schedules():
-    WIDE  = "═" * 66
-    THIN  = "─" * 66
-    print("Schedule presets\n")
-    for preset_name, modes in TRANSMIT_SCHEDULE_PROFILES.items():
-        is_active    = preset_name == TRANSMIT_SCHEDULE_PROFILE
-        active_tag   = "  ◀ active" if is_active else ""
-        description  = TRANSMIT_SCHEDULE_DESCRIPTIONS.get(preset_name, "")
-        profiles     = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
-        fallback_policy = describe_schedule_fallback_policy(preset_name)
+    def _estimate_mode_cooldown_seconds(profile: ModeProfile) -> float:
+        method = _normalize_cooldown_method(TX_COOLDOWN_METHOD)
+        ratio = _duty_cooldown_ratio()
 
-        total_tx    = sum(p.duration_seconds for p in profiles)
-        total_cool  = sum(p.cooldown_seconds  for p in profiles)
-        total_cycle = total_tx + total_cool
-        duty        = 100.0 * total_tx / total_cycle if total_cycle else 0.0
-        cycle_min   = total_cycle / 60.0
-        mmsstv_steps = [p for p in profiles if p.requires_mmsstv]
+        if method == "fixed":
+            return max(0.0, FIXED_TX_COOLDOWN_SECONDS) * COOLDOWN_SCALE_FACTOR
 
-        # Deduplicate fallback pairs for the summary (preserve insertion order)
-        seen_fb: dict = {}
-        for p in mmsstv_steps:
-            key = f"{p.name} -> {p.fallback_mode}"
-            seen_fb[key] = True
-        unique_fb = list(seen_fb.keys())
+        if method in ("adaptive_dutycycle", "adaptive_avg_dutycycle"):
+            return max(0.0, float(profile.duration_seconds) * ratio) * COOLDOWN_SCALE_FACTOR
 
-        # ── header ────────────────────────────────────────────────────────────
-        print(f"  {WIDE}")
-        print(f"  {preset_name.upper()}{active_tag}")
-        if description:
-            # wrap description to ~62 chars
-            words, line = description.split(), ""
-            for w in words:
-                if len(line) + len(w) + 1 > 62:
-                    print(f"  {line}")
-                    line = w
-                else:
-                    line = (line + " " + w).lstrip()
-            if line:
-                print(f"  {line}")
-        print(f"  {THIN}")
+        # estimated thermal method: approximate per-mode cooldown at near-launch density.
+        density_factor = _estimated_air_density_factor(1)
+        h_air = ESTIMATED_AIR_HEAT_TRANSFER_COEFFICIENT * density_factor
+        h_total = ESTIMATED_PCB_HEAT_TRANSFER_COEFFICIENT + h_air
+        h_total_sea_level = ESTIMATED_PCB_HEAT_TRANSFER_COEFFICIENT + ESTIMATED_AIR_HEAT_TRANSFER_COEFFICIENT
+        convection_penalty = h_total_sea_level / max(0.01, h_total)
 
-        # ── step table ────────────────────────────────────────────────────────
-        print(f"  {'#':>2}  {'Mode':<12}  {'TX (s)':>6}  {'Cool (s)':>8}  "
-              f"{'Gap (s)':>7}  {'MMSSTV':>6}  Fallback")
-        print(f"  {'':>2}  {'':12}  {'------':>6}  {'--------':>8}  "
-              f"{'-------':>7}  {'------':>6}")
-        for i, p in enumerate(profiles, 1):
-            gap        = p.duration_seconds + p.cooldown_seconds
-            mmsstv_str = "yes" if p.requires_mmsstv else "-"
-            fb_str     = p.fallback_mode or "-"
-            print(f"  {i:>2}  {p.name:<12}  {p.duration_seconds:>6}  "
-                  f"{p.cooldown_seconds:>8}  {gap:>7}  {mmsstv_str:>6}  {fb_str}")
-        print(f"  {THIN}")
+        heat_power = ESTIMATED_TX_HEAT_POWER_HIGH_W if TX_POWER_LEVEL == "high" else ESTIMATED_TX_HEAT_POWER_LOW_W
+        heat_power_ref = ESTIMATED_TX_HEAT_POWER_LOW_W if ESTIMATED_TX_HEAT_POWER_LOW_W > 0 else 1.0
+        power_penalty = heat_power / heat_power_ref
+        area_penalty = max(0.5, min(2.0, 0.0030 / max(1e-5, ESTIMATED_EFFECTIVE_THERMAL_AREA_M2)))
+        estimated_multiplier = convection_penalty * power_penalty * area_penalty * ESTIMATED_COOLDOWN_SAFETY_FACTOR
 
-        # ── summary block ─────────────────────────────────────────────────────
-        print(f"  {'Steps':22}: {len(profiles)}")
-        print(f"  {'Total airtime':22}: {total_tx} s")
-        print(f"  {'Total cooldown':22}: {total_cool} s")
-        print(f"  {'Min rotation time':22}: {total_cycle} s  ({cycle_min:.1f} min)")
-        print(f"  {'Max duty cycle':22}: {duty:.1f}%")
-        print(f"  {'Unavailable default':22}: {fallback_policy}")
-        if mmsstv_steps:
-            print(f"  {'MMSSTV library needed':22}: yes")
-            print(f"  {'Fallbacks (unique)':22}: {',  '.join(unique_fb)}")
-        else:
-            print(f"  {'MMSSTV library needed':22}: no")
+        base_cooldown = max(0.0, float(profile.duration_seconds) * ratio)
+        return base_cooldown * estimated_multiplier * COOLDOWN_SCALE_FACTOR
+
+    def _short_modes(modes: Tuple[str, ...], width: int = 24) -> str:
+        text = ", ".join(modes)
+        if len(text) <= width:
+            return text
+        return text[: width - 3] + "..."
+
+    profile_meta = {
+        "native-rapid": ("low", "fast", "native-only fast updates"),
+        "native-balanced": ("medium", "medium", "native-only balanced default"),
+        "native-detail": ("high", "slow", "native-only higher detail"),
+        "mono": ("low", "fast", "max status cadence"),
+        "rapid": ("medium", "fast", "fast color updates"),
+        "standard": ("medium", "medium", "balanced default"),
+        "quality": ("high", "medium", "higher detail with moderate cadence"),
+        "high-res": ("very-high", "slow", "maximum detail"),
+    }
+
+    order = [
+        "native-rapid",
+        "native-balanced",
+        "native-detail",
+        "mono",
+        "rapid",
+        "standard",
+        "quality",
+        "high-res",
+    ]
+
+    rows: List[dict] = []
+    for preset_name in order:
+        if preset_name not in TRANSMIT_SCHEDULE_PROFILES:
+            continue
+        modes = TRANSMIT_SCHEDULE_PROFILES[preset_name]
+        profiles = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
+        total_tx = sum(p.duration_seconds for p in profiles)
+        total_rec_wait = sum(_estimate_mode_cooldown_seconds(p) for p in profiles)
+        total_cycle = total_tx + total_rec_wait
+        is_native_only = not any(p.requires_mmsstv for p in profiles)
+        detail, cadence, use = profile_meta.get(preset_name, ("custom", "custom", "operator-defined"))
+
+        rows.append({
+            "active": "*" if preset_name == TRANSMIT_SCHEDULE_PROFILE else "",
+            "name": preset_name,
+            "modes": _short_modes(modes),
+            "tx": total_tx,
+            "rec_wait": total_rec_wait,
+            "cycle": total_cycle,
+            "mmsstv": "no" if is_native_only else "yes",
+            "detail": detail,
+            "cadence": cadence,
+            "use": use,
+        })
+
+    method = _normalize_cooldown_method(TX_COOLDOWN_METHOD)
+    ratio = _duty_cooldown_ratio()
+
+    THIN = "-" * 98
+
+    def _section(title: str) -> None:
         print()
+        print(title)
+        print(THIN)
+
+    print("SCHEDULE PLAYBOOK")
+    print("Quick start: 1) choose preset  2) set cooldown policy  3) set capture/TX pacing")
+
+    _section("CURRENT CONFIGURATION:")
+    print(f"  Active preset: {TRANSMIT_SCHEDULE_PROFILE}")
+    print(
+        f"  Cooldown policy: method={method}  duty_cycle_target={MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%  "
+        f"scale={COOLDOWN_SCALE_FACTOR:.2f}  fixed={FIXED_TX_COOLDOWN_SECONDS:.0f}s"
+    )
+    if method != "fixed":
+        print(
+            f"  Rule of thumb: wait ~= TX * {ratio:.2f} "
+            f"(before scale and estimated-thermal multiplier)."
+        )
+    print("  Units: TX(s), Wait(s), and Cycle(s) are seconds.")
+    print("  Wait(s) is recommendation guidance; runtime TX gating remains authoritative.")
+
+    _section("[STEP 1] CHOOSE SCHEDULE PROFILE:")
+    print("  Guidance: If MMSSTV library is unavailable, choose a native-* preset.")
+    print("  Otherwise, choose by DETAIL and CADENCE columns.")
+    print()
+
+    header = (
+        f"{'Act':<3} {'Preset':<16} {'Detail':<9} {'Cadence':<8} {'Lib':<3} "
+        f"{'TX(s)':>6} {'Wait(s)':>8} {'Cycle(s)':>8} {'Modes':<24}  Use"
+    )
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        print(
+            f"{row['active']:<3} {row['name']:<16} {row['detail']:<9} {row['cadence']:<8} {row['mmsstv']:<3} "
+            f"{row['tx']:>6.0f} {row['rec_wait']:>8.0f} {row['cycle']:>8.0f} {row['modes']:<24}  {row['use']}"
+        )
+    print("  Legend: Lib=no means no MMSSTV library required; Lib=yes requires MMSSTV library.")
+
+    _section("[STEP 2] CHOOSE COOLDOWN METHOD AND TUNE IT:")
+    print("  Goal: keep radios cool while preserving useful TX cadence.")
+    print("  Suggested order: method -> duty cycle target -> scale -> fixed seconds (only if fixed).")
+    print()
+
+    method_header = f"  {'METHOD':<23} {'WHEN TO USE':<34} {'WAIT MODEL':<36}"
+    print(method_header)
+    print("  " + ("-" * (len(method_header) - 2)))
+    print(f"  {'fixed':<23} {'Bench / predictable timing':<34} {'constant seconds each TX':<36}")
+    print(f"  {'adaptive_dutycycle':<23} {'General default':<34} {'wait from last TX + duty cycle target':<36}")
+    print(f"  {'adaptive_avg_dutycycle':<23} {'Mixed-mode fairness':<34} {'wait by schedule mode share':<36}")
+    print(f"  {'estimated':<23} {'Conservative flight safety':<34} {'adaptive + thermal/altitude correction':<36}")
+    print()
+
+    settings_header = f"  {'[radio] SETTING':<36} {'PURPOSE':<40} {'CLI':<22}"
+    print(settings_header)
+    print("  " + ("-" * (len(settings_header) - 2)))
+    print(f"  {'cooldown_method':<36} {'select cooldown logic':<40} {'--cooldown-method':<22}")
+    print(f"  {'max_transmit_duty_cycle':<36} {'higher value => shorter waits':<40} {'--duty-cycle':<22}")
+    print(f"  {'cooldown_scale_factor':<36} {'global wait multiplier':<40} {'--cooldown-scale':<22}")
+    print(f"  {'fixed_tx_cooldown_seconds':<36} {'used only when method=fixed':<40} {'--fixed-cooldown-seconds':<22}")
+    print()
+
+    print("  Tuning guide:")
+    print("    Radios running hot -> lower max_transmit_duty_cycle OR raise cooldown_scale_factor.")
+    print("    TX too infrequent   -> raise max_transmit_duty_cycle OR lower cooldown_scale_factor.")
+    print("  Practical default: adaptive_dutycycle + duty cycle=0.50 + scale=1.00")
+
+    _section("[STEP 3] SET CAPTURE/TX PACING:")
+    print("  TX occurs only when BOTH gates pass:")
+    print("    Gate A (count): min_captures_between_transmissions")
+    print("    Gate B (time): cooldown wait from Step 2")
+    print()
+
+    mission_header = f"  {'[mission] SETTING':<36} {'PURPOSE':<40} {'CLI':<22}"
+    print(mission_header)
+    print("  " + ("-" * (len(mission_header) - 2)))
+    print(f"  {'interval':<36} {'seconds between captures':<40} {'--interval':<22}")
+    print(f"  {'min_captures_between_transmissions':<36} {'capture-count TX gate':<40} {'--min-captures':<22}")
+    print(f"  {'total':<36} {'mission capture count':<40} {'--total':<22}")
+    print()
+
+    print("  Practical estimate:")
+    print("    earliest-next-TX ~= max(min_captures * interval, Wait) seconds")
+    print("  Example commands:")
+    print("    python3 pi_sstv.py --schedule native-balanced --cooldown-method adaptive_dutycycle --duty-cycle 0.50")
+    print("    python3 pi_sstv.py --schedule high-res --cooldown-method fixed --fixed-cooldown-seconds 45 --min-captures 1")
 
 
 def wait_for_file(path, timeout=5):
@@ -3990,7 +4470,7 @@ def discover_slowframe_capabilities():
     output = "\n".join(filter(None, [result.stdout, result.stderr]))
     log_debug(f"SlowFrame -L raw output:\n{output}")
 
-    discovered_native, discovered_mmsstv, added_count = _augment_mode_profiles_from_slowframe_output(output)
+    discovered_native, discovered_mmsstv, auto_profiled_modes = _augment_mode_profiles_from_slowframe_output(output)
     state.available_modes.update(discovered_native)
     state.available_modes.update(discovered_mmsstv)
     _log_curated_mode_inventory_audit(
@@ -3998,8 +4478,8 @@ def discover_slowframe_capabilities():
         discovered_mmsstv,
         state.mmsstv_library_detected,
     )
-    if added_count:
-        log(f"SlowFrame discovery: added {added_count} auto-profiled mode(s) from -L listing")
+    if auto_profiled_modes:
+        log(f"SlowFrame discovery: added {len(auto_profiled_modes)} auto-profiled mode(s) from -L listing")
 
     mmsstv_status = "MMSSTV enabled" if state.mmsstv_library_detected else "native-only"
     native_modes = sorted(discovered_native or get_native_modes())
@@ -4017,15 +4497,28 @@ def discover_slowframe_capabilities():
         for m in state.available_modes
         if m in discovered_mmsstv or (m not in native_modes and MODE_PROFILES.get(m) and MODE_PROFILES[m].requires_mmsstv)
     )
+    curated_mmsstv_modes = sorted(m for m in mmsstv_modes if m not in auto_profiled_modes)
+    discovered_mmsstv_modes = sorted(m for m in mmsstv_modes if m in auto_profiled_modes)
     log(f"SlowFrame discovery: {len(state.available_modes)} modes available ({mmsstv_status})")
     log(f"  native : {', '.join(native_modes)}")
     if mmsstv_modes:
-        log(f"  mmsstv : {', '.join(mmsstv_modes)}")
+        if curated_mmsstv_modes:
+            log(f"  mmsstv-curated    : {', '.join(curated_mmsstv_modes)}")
+        else:
+            log("  mmsstv-curated    : none")
+        if discovered_mmsstv_modes:
+            log(f"  mmsstv-discovered : {', '.join(discovered_mmsstv_modes)}")
+        else:
+            log("  mmsstv-discovered : none")
         log("  MMSSTV mode details:")
-        for mode_name in mmsstv_modes:
+        for mode_name in curated_mmsstv_modes:
             profile = MODE_PROFILES.get(mode_name)
             if profile:
-                log(f"    {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
+                log(f"    [curated]    {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
+        for mode_name in discovered_mmsstv_modes:
+            profile = MODE_PROFILES.get(mode_name)
+            if profile:
+                log(f"    [discovered] {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
     else:
         log("  mmsstv : none (library not loaded)")
 
@@ -4173,7 +4666,7 @@ def _compute_required_cooldown_seconds(
         base_duration = max(0.0, last_duration)
         cooldown_required = base_duration * ratio
         detail = (
-            f"last_tx={base_duration:.0f}s duty={MAX_TRANSMIT_DUTY_CYCLE:.2f}"
+            f"last_tx={base_duration:.0f}s duty_cycle={MAX_TRANSMIT_DUTY_CYCLE:.2f}"
             + (f" anchor={last_mode_name}" if base_duration > 0 else " (first TX)")
         )
         return cooldown_required * COOLDOWN_SCALE_FACTOR, detail, "last-tx", MAX_TRANSMIT_DUTY_CYCLE, 1.0
@@ -4187,11 +4680,11 @@ def _compute_required_cooldown_seconds(
         cooldown_required = schedule_cool_total * mode_share
         detail = (
             f"schedule_total_tx={schedule_total:.0f}s share={mode_share:.3f} "
-            f"duty={MAX_TRANSMIT_DUTY_CYCLE:.2f}"
+            f"duty_cycle={MAX_TRANSMIT_DUTY_CYCLE:.2f}"
         )
         return cooldown_required * COOLDOWN_SCALE_FACTOR, detail, "schedule-share", MAX_TRANSMIT_DUTY_CYCLE, 1.0
 
-    # estimated thermal model: duty-ratio cooldown corrected by altitude-dependent convection.
+    # estimated thermal model: duty cycle-ratio cooldown corrected by altitude-dependent convection.
     tx_duration = max(0.0, last_duration)
     base_cooldown = tx_duration * ratio
     density_factor = _estimated_air_density_factor(capture_number)
@@ -4285,6 +4778,8 @@ def evaluate_schedule_gate(
         "eta_text": eta_text,
         "blockers": blockers,
         "can_transmit": can_transmit,
+        "schedule_profile": TRANSMIT_SCHEDULE_PROFILE,
+        "schedule_modes": TRANSMIT_SCHEDULE,
     }
 
 
@@ -4293,11 +4788,23 @@ def log_schedule_gate_report(gate: dict):
     blockers = "none" if gate["can_transmit"] else "; ".join(gate["blockers"])
     next_wait = "0s" if gate["can_transmit"] else _format_seconds_compact(gate["wait_seconds"])
 
+    # Build schedule display with active slot highlighted.
+    schedule_modes = gate.get("schedule_modes", TRANSMIT_SCHEDULE)
+    slot_index = gate.get("slot_index", 0)
+    modes_display_parts = []
+    for i, mode in enumerate(schedule_modes):
+        if i == slot_index:
+            modes_display_parts.append(f"[{mode}]")
+        else:
+            modes_display_parts.append(mode)
+    schedule_display = " ".join(modes_display_parts)
+
     log_stage_header(
         f"Schedule Gate  Capture #{gate['capture_number']}",
         [
-            ("slot", gate["slot_label"]),
-            ("schedule", gate["requested_mode"]),
+            ("profile", f"{gate.get('schedule_profile', TRANSMIT_SCHEDULE_PROFILE)}  slot {gate['slot_label']}"),
+            ("modes", schedule_display),
+            ("requested", gate["requested_mode"]),
             ("resolved", gate["resolved_mode"]),
             ("decision", status),
             ("next_tx", gate["eta_text"]),
@@ -4316,7 +4823,7 @@ def log_schedule_gate_report(gate: dict):
                 f"{gate['cooldown_method']} ({gate['cooldown_basis']})  scale={COOLDOWN_SCALE_FACTOR:.2f}  detail={gate['cooldown_detail']}",
             ),
             (
-                "duty",
+                "duty_cycle",
                 f"target={gate['target_duty_cycle'] * 100:.1f}%  projected={gate['effective_duty_cycle'] * 100:.1f}%  model-mult={gate['method_multiplier']:.2f}",
             ),
             ("blockers", blockers),
@@ -5289,7 +5796,7 @@ def print_runtime_startup_summary(args):
                 f"enabled={GPS_ENABLED}  device={GPS_DEVICE}  baud={GPS_BAUD}  units={GPS_ALTITUDE_UNITS}  "
                 f"startup_cmds={len(GPS_STARTUP_COMMANDS)}  startup_retries={GPS_STARTUP_INIT_RETRIES}",
             ),
-            ("cooldown", f"method={TX_COOLDOWN_METHOD}  fixed={FIXED_TX_COOLDOWN_SECONDS:.0f}s  duty={MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%  scale={COOLDOWN_SCALE_FACTOR:.2f}"),
+            ("cooldown", f"method={TX_COOLDOWN_METHOD}  fixed={FIXED_TX_COOLDOWN_SECONDS:.0f}s  duty_cycle={MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%  scale={COOLDOWN_SCALE_FACTOR:.2f}"),
             ("alsa", f"playback={ALSA_AUDIO_DEVICE or 'auto-select'}  mixer={describe_alsa_guardrails()}"),
             ("aplay", f"base_timeout={APLAY_TIMEOUT_SECONDS}s  margin={APLAY_TIMEOUT_MARGIN_SECONDS}s"),
         ],
@@ -5307,7 +5814,7 @@ def print_mission_summary(runtime_state):
             ("fallback", describe_schedule_fallback_policy(TRANSMIT_SCHEDULE_PROFILE)),
             ("mmsstv", mmsstv_status),
             ("capture", f"interval={PIC_INTERVAL}s  total={PIC_TOTAL}  min_between_tx={MIN_CAPTURES_BETWEEN_TRANSMISSIONS}"),
-            ("duty_target", f"{MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%"),
+            ("duty_cycle_target", f"{MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%"),
             ("cooldown", f"method={TX_COOLDOWN_METHOD}  fixed={FIXED_TX_COOLDOWN_SECONDS:.0f}s  scale={COOLDOWN_SCALE_FACTOR:.2f}"),
             ("estimated", f"flight={ESTIMATED_FLIGHT_DURATION_MINUTES:.0f}m  freefall={ESTIMATED_FREEFALL_MINUTES:.0f}m  h_pcb={ESTIMATED_PCB_HEAT_TRANSFER_COEFFICIENT:.2f}  h_air0={ESTIMATED_AIR_HEAT_TRANSFER_COEFFICIENT:.1f}"),
             *describe_radio_control_states(),
@@ -5468,7 +5975,7 @@ def main():
         TRANSMIT_SCHEDULE_PROFILE = schedule_name
         TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES[schedule_name]
     else:
-        TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE_PROFILES["hab_cruise"])
+        TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE_PROFILES["standard"])
     if args.total is not None:
         PIC_TOTAL = args.total
     if args.interval is not None:

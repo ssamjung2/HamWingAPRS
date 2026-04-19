@@ -52,7 +52,7 @@
 #define MODULE_VHF  1
 #define MODULE_UHF  2
 #define MODULE_BOTH 3
-#define ACTIVE_MODULE MODULE_UHF
+#define ACTIVE_MODULE MODULE_BOTH
 
 // Keep false by default; fallback mapping can be enabled for diagnostics.
 #define TRY_UHF_BOTH_UART_MAPPINGS 0
@@ -186,8 +186,8 @@ struct RadioConfig {
 // Default configurations — edit these to match your frequencies and preferences
 // For SSTV/data, keep DRA818 audio shaping filters OFF for the flattest AF path.
 RadioConfig VHF_CONFIG = {
-  144.3900,   // TX freq
-  144.3900,   // RX freq
+  144.5500,   // TX freq
+  144.5500,   // RX freq
   4,          // squelch
   6,          // volume
   0,          // CTCSS TX
@@ -199,8 +199,8 @@ RadioConfig VHF_CONFIG = {
 };
 
 RadioConfig UHF_CONFIG = {
-  440.8000,   // TX freq
-  440.8000,   // RX freq
+  434.5000,   // TX freq
+  434.5000,   // RX freq
   4,          // squelch
   6,          // volume
   0,          // CTCSS TX
@@ -1454,7 +1454,7 @@ void printConfigBanner() {
 
 // Read battery voltage using Feather M0 onboard 1/2 VBAT divider on A7.
 float readBatteryVoltage() {
-  return analogRead(PIN_VBAT) * 2.0f * 3.3f / 1024.0f;
+  return analogRead(PIN_VBAT) * 2.0f * 3.3f / 4096.0f;
 }
 
 void printStatusBanner(bool forceHeader, bool ignoreBackpressure) {

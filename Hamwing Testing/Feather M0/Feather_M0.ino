@@ -1220,7 +1220,7 @@ void loop() {
   float measuredvbat = analogRead(VBatPin);
   measuredvbat *= 2;
   measuredvbat *= 3.3;
-  measuredvbat /= 1024;
+  measuredvbat /= 4096;
   Serial.print(F("Battery voltage: "));
   Serial.println(measuredvbat);
   printStatusBanner(measuredvbat, F("Pre-Test"));
