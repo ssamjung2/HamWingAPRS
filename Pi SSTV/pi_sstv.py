@@ -719,6 +719,52 @@ def _synthesized_mode_description(
     return f"{pace} {family} {color} mode ({geometry}, ~{duration_seconds}s TX; auto-profiled from slowframe -L {source})."
 
 
+def _profile_resolution_text(profile: ModeProfile) -> str:
+    if profile.image_height is None:
+        return f"{profile.image_width}x?"
+    return f"{profile.image_width}x{profile.image_height}"
+
+
+def _profile_color_text(profile: ModeProfile) -> str:
+    lowered_name = profile.name.lower()
+    lowered_description = profile.description.lower()
+    is_mono = (
+        lowered_name.endswith("bw")
+        or "bw" in lowered_name
+        or "monochrome" in lowered_description
+        or "black and white" in lowered_description
+        or "b/w" in lowered_description
+    )
+    return "black and white" if is_mono else "color"
+
+
+def _format_discovered_mode_table_rows(profiles: List[ModeProfile]) -> List[str]:
+    if not profiles:
+        return []
+
+    mode_values = [profile.name for profile in profiles]
+    resolution_values = [_profile_resolution_text(profile) for profile in profiles]
+    type_values = [_profile_color_text(profile) for profile in profiles]
+
+    mode_width = max(len("Mode"), max(len(value) for value in mode_values))
+    resolution_width = max(len("Resolution"), max(len(value) for value in resolution_values))
+    type_width = max(len("Type"), max(len(value) for value in type_values))
+
+    header = f"    {'Mode':<{mode_width}}  {'Resolution':<{resolution_width}}  {'Type':<{type_width}}"
+
+    rows = [
+        header,
+        f"    {'-' * mode_width}  {'-' * resolution_width}  {'-' * type_width}",
+    ]
+
+    for mode_value, resolution_value, type_value in zip(mode_values, resolution_values, type_values):
+        rows.append(
+            f"    {mode_value:<{mode_width}}  {resolution_value:<{resolution_width}}  {type_value:<{type_width}}"
+        )
+
+    return rows
+
+
 def _augment_mode_profiles_from_slowframe_output(output: str) -> Tuple[Set[str], Set[str], Set[str]]:
     """Parse slowframe -L output, add missing profiles, and return (native, mmsstv, auto_profiled)."""
     native_modes: Set[str] = set()
@@ -4497,28 +4543,28 @@ def discover_slowframe_capabilities():
         for m in state.available_modes
         if m in discovered_mmsstv or (m not in native_modes and MODE_PROFILES.get(m) and MODE_PROFILES[m].requires_mmsstv)
     )
-    curated_mmsstv_modes = sorted(m for m in mmsstv_modes if m not in auto_profiled_modes)
-    discovered_mmsstv_modes = sorted(m for m in mmsstv_modes if m in auto_profiled_modes)
+    # Present one consolidated MMSSTV discovery list that reflects all
+    # modes currently available via the loaded MMSSTV library.
+    discovered_mmsstv_modes = list(mmsstv_modes)
     log(f"SlowFrame discovery: {len(state.available_modes)} modes available ({mmsstv_status})")
     log(f"  native : {', '.join(native_modes)}")
     if mmsstv_modes:
-        if curated_mmsstv_modes:
-            log(f"  mmsstv-curated    : {', '.join(curated_mmsstv_modes)}")
-        else:
-            log("  mmsstv-curated    : none")
         if discovered_mmsstv_modes:
             log(f"  mmsstv-discovered : {', '.join(discovered_mmsstv_modes)}")
         else:
             log("  mmsstv-discovered : none")
-        log("  MMSSTV mode details:")
-        for mode_name in curated_mmsstv_modes:
-            profile = MODE_PROFILES.get(mode_name)
-            if profile:
-                log(f"    [curated]    {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
-        for mode_name in discovered_mmsstv_modes:
-            profile = MODE_PROFILES.get(mode_name)
-            if profile:
-                log(f"    [discovered] {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
+        if discovered_mmsstv_modes:
+            discovered_profiles = [
+                MODE_PROFILES[mode_name]
+                for mode_name in discovered_mmsstv_modes
+                if mode_name in MODE_PROFILES
+            ]
+            detail_rows = _format_discovered_mode_table_rows(discovered_profiles)
+            if detail_rows:
+                log(f"  {'=' * len(detail_rows[0].strip())}")
+            log("  MMSSTV mode details:")
+            for row in detail_rows:
+                log(row)
     else:
         log("  mmsstv : none (library not loaded)")
 
