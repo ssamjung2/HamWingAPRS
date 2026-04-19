@@ -1,0 +1,33 @@
+[Unit]
+Description=HamWing SSTV Mission Service
+Wants=network-online.target
+After=network-online.target local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=pi-user
+Group=pi-user
+SupplementaryGroups=audio gpio dialout video
+WorkingDirectory=/home/pi-user/Desktop
+EnvironmentFile=-/etc/default/pi-sstv
+Environment=PYTHONUNBUFFERED=1
+
+# Mission mode (recommended): configuration-file driven
+ExecStart=/usr/bin/python3 /home/pi-user/Desktop/pi_sstv.py --config /home/pi-user/pi_sstv.cfg
+
+Restart=always
+RestartSec=2
+TimeoutStartSec=120
+TimeoutStopSec=30
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+
+# Optional hardening (uncomment after full validation)
+# NoNewPrivileges=true
+# ProtectSystem=full
+# ReadWritePaths=/home/pi-user/Desktop/HAB /home/pi-user/data.csv
+
+[Install]
+WantedBy=multi-user.target
