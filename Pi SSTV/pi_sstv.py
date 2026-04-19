@@ -115,6 +115,24 @@ DEPRECATED_CONFIG_KEYS = {
             "Use cooldown_method + max_transmit_duty_cycle + cooldown_scale_factor instead."
         ),
     },
+    "gps": {
+        "module_family": (
+            "deprecated; GPS startup behavior is now command-driven. "
+            "Use startup_commands instead."
+        ),
+        "ublox_apply_airborne_model": (
+            "deprecated; use startup_commands with a UBX hex command string instead."
+        ),
+        "ublox_dynamic_model": (
+            "deprecated; encode the desired dynamic model byte in startup_commands."
+        ),
+        "ublox_init_retries": (
+            "deprecated; use startup_init_retries instead."
+        ),
+        "ublox_ack_timeout_seconds": (
+            "deprecated; generic startup command execution does not parse UBX ACK/NAK."
+        ),
+    },
 }
 
 # Estimated thermal model constants (DRA818 + HamWing PCB path).
@@ -252,8 +270,8 @@ _ALSA_MIXER_DISABLED: bool = False
 # AUDIO_RIGHT_PWM_PIN = 19
 
 # ---------------------------------------------------------------------------
-# GPS module settings (UART-connected, NMEA 0183)
-# Recommended module: u-blox NEO-M8N or NEO-6M breakout (UART interface)
+# GPS module settings (UART-connected, generic NMEA 0183)
+# Works with any UART GPS module that outputs NMEA and accepts optional startup commands.
 #   Wiring: GPS TX -> Pi GPIO15/RX (pin 10), GPS VCC -> 3.3 V (pin 1), GPS GND -> GND
 #   Requires: pip3 install pyserial
 #   Requires: disable Linux serial console via raspi-config -> Interface Options -> Serial Port
@@ -264,6 +282,12 @@ GPS_DEVICE = "/dev/serial0"   # Pi Zero hardware UART (GPIO14/GPIO15)
 GPS_BAUD = 9600
 GPS_TIMEOUT_SECONDS = 5.0
 GPS_ALTITUDE_UNITS = "m"      # "m" for metres, "ft" for feet
+GPS_STARTUP_COMMANDS: List[str] = []
+GPS_STARTUP_INIT_RETRIES = 1
+GPS_STARTUP_COMMAND_DELAY_SECONDS = 0.20
+GPS_STARTUP_READBACK_SECONDS = 0.20
+
+_GPS_STARTUP_INIT_ATTEMPTED = False
 
 
 @dataclass(frozen=True)
@@ -1170,10 +1194,11 @@ aplay_timeout_margin_seconds = {APLAY_TIMEOUT_MARGIN_SECONDS}
 # -----------------------------------------------------------------------------
 # [gps]  GPS module for gridsquare and altitude overlay
 # -----------------------------------------------------------------------------
-# Recommended module: u-blox NEO-M8N or NEO-6M (UART, NMEA 0183)
-# Wiring: GPS TX -> Pi GPIO15 / RX (physical pin 10)
-#         GPS VCC -> Pi 3V3 (pin 1 or 17)
-#         GPS GND -> Pi GND (any)
+# Generic UART GPS module (NMEA 0183)
+# Wiring: GPS TX  -> Pi GPIO15 / RXD0 (BCM 15, physical pin 10)
+#         GPS RX  -> Pi GPIO14 / TXD0 (BCM 14, physical pin 8)
+#         GPS VCC -> Pi 3V3 (physical pin 1 or 17)
+#         GPS GND -> Pi GND (any ground pin)
 # Setup:  pip3 install pyserial
 #         sudo raspi-config -> Interface Options -> Serial Port
 #           -> Disable login shell, Enable serial hardware
@@ -1183,11 +1208,32 @@ aplay_timeout_margin_seconds = {APLAY_TIMEOUT_MARGIN_SECONDS}
 # Enable GPS polling and gridsquare/altitude image overlay.
 enable = {GPS_ENABLED_STR}
 
-# Serial device path (Pi Zero hardware UART via GPIO14/GPIO15).
+# Serial device path (Pi Zero hardware UART via GPIO14/TXD0 pin 8 and GPIO15/RXD0 pin 10).
 device = {GPS_DEVICE}
 
 # GPS serial baud rate.  Most u-blox modules default to 9600.
 baud = {GPS_BAUD}
+
+# Optional startup command list sent once when GPS is first used.
+# Supported command prefixes:
+#   ascii:AT+CMD\r\n               (ASCII text command)
+#   hex:B5 62 06 24 24 00 ...      (raw bytes; supports 0xNN tokens too)
+# If no prefix is provided, parser auto-detects hex-like strings, else ASCII.
+#
+# Example: UBX-CFG-NAV5 dynamic model 6 (airborne <1g)
+# startup_commands =
+#     hex:B5 62 06 24 24 00 FF FF 06 03 00 00 00 00 10 27 00 00 05 00 FA 00 FA 00 64 00 2C 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 16 DC
+startup_commands =
+
+# Retry count for the full startup command sequence.
+startup_init_retries = {GPS_STARTUP_INIT_RETRIES}
+
+# Delay between startup commands (seconds).
+startup_command_delay_seconds = {GPS_STARTUP_COMMAND_DELAY_SECONDS}
+
+# Optional readback window after each startup command (seconds).
+# Non-zero values read and discard any immediate response bytes for debug logging.
+startup_readback_seconds = {GPS_STARTUP_READBACK_SECONDS}
 
 # Altitude display units.
 #   m  - metres above MSL   (default)
@@ -1253,6 +1299,9 @@ def load_config(path: str):
     global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, DATA_CSV, SSTV_WAV
     global ACTIVE_RADIO_BAND, TX_POWER_LEVEL, PD_IDLE_MODE
     global GPS_ENABLED, GPS_DEVICE, GPS_BAUD, GPS_ALTITUDE_UNITS
+    global GPS_STARTUP_COMMANDS, GPS_STARTUP_INIT_RETRIES
+    global GPS_STARTUP_COMMAND_DELAY_SECONDS, GPS_STARTUP_READBACK_SECONDS
+    global _GPS_STARTUP_INIT_ATTEMPTED
     global ALSA_AUDIO_DEVICE, ALSA_MIXER_DEVICE, ALSA_MIXER_CONTROL
     global ALSA_TARGET_VOLUME_PERCENT, ALSA_MAX_SAFE_VOLUME_PERCENT, ALSA_ENFORCE_VOLUME
     global APLAY_TIMEOUT_SECONDS, APLAY_TIMEOUT_MARGIN_SECONDS
@@ -1484,11 +1533,36 @@ def load_config(path: str):
     GPS_ENABLED       = _bool("gps", "enable",  GPS_ENABLED)
     GPS_DEVICE        = _str ("gps", "device",  GPS_DEVICE)
     GPS_BAUD          = _int ("gps", "baud",    GPS_BAUD)
+    startup_commands_raw = _str("gps", "startup_commands", "")
+    try:
+        GPS_STARTUP_COMMANDS = _parse_gps_startup_commands(startup_commands_raw)
+    except ValueError as exc:
+        print(f"Config [gps] startup_commands: {exc}", file=sys.stderr)
+        sys.exit(1)
+    for command_spec in GPS_STARTUP_COMMANDS:
+        try:
+            _build_gps_startup_command_payload(command_spec)
+        except ValueError as exc:
+            print(
+                f"Config [gps] startup_commands: invalid entry '{command_spec}' ({exc})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    GPS_STARTUP_INIT_RETRIES = max(1, _int("gps", "startup_init_retries", GPS_STARTUP_INIT_RETRIES))
+    GPS_STARTUP_COMMAND_DELAY_SECONDS = max(
+        0.0,
+        _float("gps", "startup_command_delay_seconds", GPS_STARTUP_COMMAND_DELAY_SECONDS),
+    )
+    GPS_STARTUP_READBACK_SECONDS = max(
+        0.0,
+        _float("gps", "startup_readback_seconds", GPS_STARTUP_READBACK_SECONDS),
+    )
     units = _str("gps", "units", GPS_ALTITUDE_UNITS).strip().lower()
     if units not in ("m", "ft"):
         print(f"Config [gps] units: invalid value '{units}'. Valid: m, ft", file=sys.stderr)
         sys.exit(1)
     GPS_ALTITUDE_UNITS = units
+    _GPS_STARTUP_INIT_ATTEMPTED = False
 
     # [logging] — debug/log_file/quiet_log_file are handled by CLI args only;
     # reading them here would require reconfiguring the logging system after
@@ -1552,6 +1626,136 @@ def latlon_to_maidenhead(lat: float, lon: float, precision: int = 6) -> str:
     return locator
 
 
+def _parse_gps_startup_commands(raw_commands: str) -> List[str]:
+    commands: List[str] = []
+    for line in raw_commands.splitlines():
+        for chunk in line.split(";"):
+            command = chunk.strip()
+            if command:
+                commands.append(command)
+    return commands
+
+
+def _parse_hex_byte_string(value: str) -> bytes:
+    compact = value.strip()
+    if not compact:
+        raise ValueError("empty HEX command")
+
+    tokens = [token for token in re.split(r"[\s,]+", compact) if token]
+    if len(tokens) == 1:
+        token = tokens[0].lower()
+        if token.startswith("0x"):
+            token = token[2:]
+        if re.fullmatch(r"[0-9a-f]+", token) and len(token) % 2 == 0:
+            return bytes.fromhex(token)
+
+    out = bytearray()
+    for token in tokens:
+        clean = token.lower()
+        if clean.startswith("0x"):
+            clean = clean[2:]
+        if not re.fullmatch(r"[0-9a-f]{1,2}", clean):
+            raise ValueError(f"invalid HEX token '{token}'")
+        out.append(int(clean, 16))
+    return bytes(out)
+
+
+def _build_gps_startup_command_payload(command_spec: str) -> Tuple[str, bytes]:
+    text = command_spec.strip()
+    if not text:
+        raise ValueError("blank command entry")
+
+    lower = text.lower()
+    if lower.startswith("hex:"):
+        payload = _parse_hex_byte_string(text[4:].strip())
+        return "hex", payload
+
+    if lower.startswith("ascii:"):
+        ascii_text = bytes(text[6:].strip(), "utf-8").decode("unicode_escape")
+        if not ascii_text.endswith(("\r", "\n")):
+            ascii_text += "\r\n"
+        return "ascii", ascii_text.encode("utf-8")
+
+    # Auto-detect raw hex strings, otherwise treat as ASCII command text.
+    if re.fullmatch(r"(?:0x[0-9a-fA-F]{1,2}|[0-9a-fA-F]{2})(?:[\s,]+(?:0x[0-9a-fA-F]{1,2}|[0-9a-fA-F]{2}))*", text):
+        return "hex", _parse_hex_byte_string(text)
+
+    ascii_text = bytes(text, "utf-8").decode("unicode_escape")
+    if not ascii_text.endswith(("\r", "\n")):
+        ascii_text += "\r\n"
+    return "ascii", ascii_text.encode("utf-8")
+
+
+def _run_gps_startup_commands_once() -> bool:
+    if not GPS_STARTUP_COMMANDS:
+        log_debug("GPS: startup init skipped (no startup_commands configured)")
+        return True
+
+    for attempt in range(1, max(1, GPS_STARTUP_INIT_RETRIES) + 1):
+        try:
+            timeout = max(0.05, GPS_STARTUP_READBACK_SECONDS)
+            with _serial.Serial(GPS_DEVICE, GPS_BAUD, timeout=timeout) as port:
+                if hasattr(port, "reset_input_buffer"):
+                    port.reset_input_buffer()
+                if hasattr(port, "reset_output_buffer"):
+                    port.reset_output_buffer()
+
+                total = len(GPS_STARTUP_COMMANDS)
+                for index, command_spec in enumerate(GPS_STARTUP_COMMANDS, start=1):
+                    command_type, payload = _build_gps_startup_command_payload(command_spec)
+                    port.write(payload)
+                    port.flush()
+                    log(
+                        f"GPS: startup command {index}/{total} sent "
+                        f"({command_type}, {len(payload)} bytes)"
+                    )
+
+                    if GPS_STARTUP_READBACK_SECONDS > 0:
+                        read_deadline = time.monotonic() + GPS_STARTUP_READBACK_SECONDS
+                        response = bytearray()
+                        while time.monotonic() < read_deadline:
+                            chunk = port.read(256)
+                            if not chunk:
+                                break
+                            response.extend(chunk)
+                        if response:
+                            preview = bytes(response[:48]).hex(" ")
+                            suffix = " ..." if len(response) > 48 else ""
+                            log_debug(
+                                f"GPS: startup readback ({len(response)} bytes): {preview}{suffix}"
+                            )
+
+                    if GPS_STARTUP_COMMAND_DELAY_SECONDS > 0:
+                        time.sleep(GPS_STARTUP_COMMAND_DELAY_SECONDS)
+
+                return True
+        except Exception as exc:
+            log(
+                f"GPS: startup command attempt {attempt}/{GPS_STARTUP_INIT_RETRIES} failed ({exc})"
+            )
+
+    return False
+
+
+def ensure_gps_receiver_initialized() -> None:
+    global _GPS_STARTUP_INIT_ATTEMPTED
+
+    if not GPS_ENABLED or _GPS_STARTUP_INIT_ATTEMPTED:
+        return
+
+    _GPS_STARTUP_INIT_ATTEMPTED = True
+
+    if not _SERIAL_AVAILABLE:
+        log("GPS: cannot run startup commands because pyserial is unavailable")
+        return
+
+    if not _run_gps_startup_commands_once():
+        log(
+            "GPS: WARNING - startup command sequence failed; "
+            "continuing with receiver defaults"
+        )
+
+
 def read_gps_fix() -> Optional[Tuple[float, float, Optional[float]]]:
     """Poll the serial GPS device for one valid NMEA GGA fix.
 
@@ -1564,6 +1768,9 @@ def read_gps_fix() -> Optional[Tuple[float, float, Optional[float]]]:
     if not _SERIAL_AVAILABLE:
         log("GPS: pyserial not available — install with: pip3 install pyserial")
         return None
+
+    ensure_gps_receiver_initialized()
+
     try:
         with _serial.Serial(GPS_DEVICE, GPS_BAUD, timeout=GPS_TIMEOUT_SECONDS) as port:
             deadline = time.monotonic() + GPS_TIMEOUT_SECONDS
@@ -5077,7 +5284,11 @@ def print_runtime_startup_summary(args):
             ("overlay", f"timestamp={SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY}  callsign={SLOWFRAME_ENABLE_CALLSIGN_OVERLAY}  id='{STATION_CALLSIGN or '-'}'"),
             *describe_radio_control_states(),
             ("ptt_pins", get_active_ptt_pins()),
-            ("gps", f"enabled={GPS_ENABLED}  device={GPS_DEVICE}  baud={GPS_BAUD}  units={GPS_ALTITUDE_UNITS}"),
+            (
+                "gps",
+                f"enabled={GPS_ENABLED}  device={GPS_DEVICE}  baud={GPS_BAUD}  units={GPS_ALTITUDE_UNITS}  "
+                f"startup_cmds={len(GPS_STARTUP_COMMANDS)}  startup_retries={GPS_STARTUP_INIT_RETRIES}",
+            ),
             ("cooldown", f"method={TX_COOLDOWN_METHOD}  fixed={FIXED_TX_COOLDOWN_SECONDS:.0f}s  duty={MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%  scale={COOLDOWN_SCALE_FACTOR:.2f}"),
             ("alsa", f"playback={ALSA_AUDIO_DEVICE or 'auto-select'}  mixer={describe_alsa_guardrails()}"),
             ("aplay", f"base_timeout={APLAY_TIMEOUT_SECONDS}s  margin={APLAY_TIMEOUT_MARGIN_SECONDS}s"),
@@ -5237,6 +5448,7 @@ def main():
     global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, SSTV_WAV
     global ACTIVE_RADIO_BAND, TX_POWER_LEVEL, PD_IDLE_MODE
     global GPS_ENABLED, GPS_DEVICE, GPS_BAUD, GPS_ALTITUDE_UNITS
+    global _GPS_STARTUP_INIT_ATTEMPTED
 
     # Only apply CLI overrides if explicitly provided (not None) — config file values take priority
     if args.radio is not None:
@@ -5319,6 +5531,7 @@ def main():
     GPS_DEVICE = args.gps_device
     GPS_BAUD = args.gps_baud
     GPS_ALTITUDE_UNITS = args.gps_units
+    _GPS_STARTUP_INIT_ATTEMPTED = False
 
     # Callsign is mandatory for encode/test/mission workflows.
     requires_overlay_callsign = not args.alsa_volume_check and args.ptt_test is None
