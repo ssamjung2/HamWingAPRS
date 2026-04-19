@@ -1,379 +1,408 @@
-# HamWing_RadioConfig — Configuration Reference
+# pi_sstv.py Configuration + CLI Reference
 
-## Quick Start Customization
+This page is a full reference for the current pi_sstv.py runtime behavior.
+It documents all config-file keys and all CLI options, with valid values, constraints, defaults, and guidance.
 
-Edit these sections in `HamWing_RadioConfig.ino` to customize your deployment.
+## 1) Configuration Model
 
----
+### 1.1 Source precedence
 
-## 1. Frequency Configuration
+When the script runs, values are applied in this order:
 
-Locate the `RadioConfig` definitions around line 96-121:
+1. Built-in defaults in pi_sstv.py
+2. Config file values (if loaded)
+3. CLI flags (explicit overrides)
 
-```cpp
-RadioConfig VHF_CONFIG = {
-  144.3900,   // ← Change these frequencies (MHz)
-  144.3900,
-  4,          // squelch
-  6,          // volume
-  0,          // ctcss_tx
-  0,          // ctcss_rx
-  DRA818_12K5,
-  true, true, true
-};
+CLI always wins over config if both are provided.
 
-RadioConfig UHF_CONFIG = {
-  440.8000,   // ← Change these frequencies (MHz)
-  440.8000,
-  4, 6, 0, 0,
-  DRA818_12K5,
-  true, true, true
-};
+### 1.2 Config file loading behavior
+
+- Explicit load:
+  - python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg
+- Auto-load fallback:
+  - If --config is omitted and /home/pi-user/pi_sstv.cfg exists, it is auto-loaded.
+
+### 1.3 Generate template
+
+- Generate a fully-commented template:
+  - python3 pi_sstv.py --generate-config
+- Generate to custom path:
+  - python3 pi_sstv.py --generate-config /path/to/pi_sstv.cfg
+
+### 1.4 Config parsing notes
+
+- Unknown keys are ignored (forward compatibility).
+- Invalid typed values (bad int/float/bool/enum) cause immediate startup error.
+- Some documented [logging] keys are intentionally not loaded from config; logging control is CLI-driven.
+
+## 2) Schedule and TX Gating Overview
+
+A transmit attempt for each capture is controlled by:
+
+1. Schedule slot selection from [mission] schedule.
+2. Mode availability/fallback resolution.
+3. Gate checks:
+   - min captures gate
+   - selected cooldown method gate
+4. Encode/TX success.
+
+Schedule index advances only after a successful transmit.
+
+## 3) Cooldown Methods (Current Runtime)
+
+Set with:
+- [radio] cooldown_method
+- CLI: --cooldown-method
+
+Valid methods:
+- fixed
+- adaptive_dutycycle
+- adaptive_avg_dutycycle
+- estimated
+
+### 3.1 fixed
+
+- Cooldown is static:
+  - cooldown = fixed_tx_cooldown_seconds
+- Best when deterministic cadence is preferred.
+
+### 3.2 adaptive_dutycycle
+
+- Uses last TX duration and duty target:
+  - cooldown = last_tx_duration * ((1 - duty) / duty)
+- Good general-purpose dynamic pacing.
+
+### 3.3 adaptive_avg_dutycycle
+
+- Uses total TX duration of the active schedule block.
+- Allocates cooldown proportional to each mode's share of total schedule TX time.
+- Good when you want fairness across mixed short/long modes.
+
+### 3.4 estimated
+
+- Starts with adaptive duty cooldown.
+- Multiplies by a simplified thermal factor using:
+  - TX power level
+  - PCB/air heat transfer coefficients
+  - mission timeline estimate (flight/freefall)
+  - safety factor
+- Best when thermal behavior needs conservative modeling.
+
+### 3.5 Global cooldown multiplier
+
+- Applied to all methods:
+  - [radio] cooldown_scale_factor
+  - CLI: --cooldown-scale
+
+## 4) Config File Reference (All Keys)
+
+## [paths]
+
+| Key | Type | Default | Guidance |
+|---|---|---|---|
+| output_dir | string path | /home/pi-user/Desktop/HAB | Output folder for captures/WAV artifacts. |
+| slowframe | string path | /home/pi-user/Desktop/Slowframe/bin/slowframe | SlowFrame binary path override. |
+| test_image | string path | /home/pi-user/pi-sstv/test.jpg | Fallback/bench image source. |
+| data_csv | string path | /home/pi-user/data.csv | Capture index log path. |
+
+## [mission]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| schedule | enum | hab_climb, hab_rapid, hab_cruise, hab_float | hab_cruise | Choose mode rotation profile for mission phase. |
+| total | int | > 0 | 500 | Number of capture cycles before mission exit. |
+| interval | float seconds | > 0 recommended | 10 | Capture interval; affects schedule gate timing. |
+| callsign | string | non-empty required for encode/test/mission workflows | empty by default | Mandatory for overlay-bearing workflows. |
+| min_captures_between_transmissions | int | >= 0 | 12 | Hard minimum capture cycles between TX attempts. |
+| no_tx | bool | true/false | false | Appears in generated template comments, but is not currently loaded from config; use CLI --no-tx. |
+
+Schedule preset value definitions:
+
+- hab_climb: robot8bw -> robot12bw -> bw24 -> m4 -> robot12bw -> r36
+- hab_rapid: robot12bw -> m4 -> r36 -> robot12bw -> m4 -> pd50
+- hab_cruise: robot12bw -> r36 -> m2 -> pd90 -> s2 -> r72 -> m1 -> pd120
+- hab_float: r36 -> pd90 -> robot12bw -> pd120 -> robot12bw -> pd180 -> pd240 -> pd290
+
+## [radio]
+
+| Key | Type | Valid values / range | Default | Guidance |
+|---|---|---|---|---|
+| band | enum | vhf, uhf, both | vhf | Select PTT line set for TX. |
+| tx_power_level | enum | low, high | low | Select DRA818 H/L behavior. |
+| pd_idle_mode | enum | release, sleep | release | release hands PD back to Feather; sleep forces LOW. |
+| cooldown_method | enum | fixed, adaptive_dutycycle, adaptive_avg_dutycycle, estimated | adaptive_dutycycle | Core TX pacing method. |
+| fixed_tx_cooldown_seconds | float seconds | >= 0 | 30.0 | Used only by fixed method. |
+| max_transmit_duty_cycle | float fraction | > 0 and <= 1.0 | 0.35 | Duty target for adaptive methods. |
+| cooldown_scale_factor | float | > 0 recommended | 1.0 | Global cooldown aggressiveness multiplier. |
+| estimated_flight_duration_minutes | float minutes | > 0 | 120.0 | Mission length estimate for estimated method. |
+| estimated_freefall_minutes | float minutes | >= 0 | 30.0 | End-of-flight descent window for estimated method. |
+| estimated_pcb_heat_transfer_coefficient | float | > 0 | 0.4 | PCB heat transfer coefficient, W/(m^2 K). |
+| estimated_air_heat_transfer_coefficient | float | > 0 | 10.0 | Sea-level still-air coefficient, W/(m^2 K). |
+| estimated_min_air_density_factor | float fraction | 0.05..1.0 | 0.22 | Convective reduction factor near peak altitude. |
+| estimated_effective_thermal_area_m2 | float area | > 0 | 0.0030 | Effective thermal area estimate. |
+| estimated_tx_heat_power_low_w | float watts | > 0 | 0.60 | Heat estimate at low TX power. |
+| estimated_tx_heat_power_high_w | float watts | > 0 | 1.10 | Heat estimate at high TX power. |
+| estimated_cooldown_safety_factor | float | > 0 | 1.10 | Conservative multiplier for estimated method. |
+| radio_wake_delay_seconds | float seconds | >= 0 recommended | 1.0 | Delay after PD high before keying PTT. |
+| ptt_key_delay_seconds | float seconds | >= 0 recommended | 0.1 | Delay after keying PTT before audio. |
+| post_playback_delay_seconds | float seconds | >= 0 recommended | 0.5 | Delay after playback before unkeying. |
+
+## [capture]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| quality | int | 1..100 | 93 | JPEG quality for rpicam-still capture. |
+| metering | string | camera-supported modes | matrix | matrix is recommended for HAB contrast scenes. |
+| exposure | string | camera-supported modes | sport | sport reduces motion blur in gondola movement. |
+| awb | string | camera-supported modes | auto | auto adapts through flight light changes. |
+| capture_file_timeout | int seconds | >= 0 | 8 | Wait before fallback to test image. |
+
+## [encode]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| format | enum | wav, aiff, ogg | wav | wav required for direct aplay TX pipeline. |
+| sample_rate | int Hz | positive int | 22050 | 22050 is standard SSTV sample rate. |
+| aspect | enum | center, pad, stretch | center | center avoids distortion. |
+| verbose | bool | true/false | false | Enables verbose SlowFrame diagnostics. |
+| sstv_conversion_settle_seconds | float seconds | >= 0 | 0.5 | Buffer before playback after encode. |
+
+## [overlay]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| enable_timestamp | bool | true/false | true | Controls timestamp rendering enable. |
+| timestamp_size | int | positive int | 11 | Base overlay font size for timestamp. |
+| timestamp_position | string | top-left/top-right/bottom-left/bottom-right/top/bottom/left/right/center | top-left | Position hint for merged overlay text path. |
+| timestamp_color | string | CSS color or #RRGGBB | white | Foreground color. |
+| timestamp_background_color | string | CSS color or #RRGGBB | black | Background bar color. |
+| timestamp_background_opacity | int | 0..100 | 50 | Background opacity aliases applied for compatibility. |
+| enable_callsign | bool | true/false | false unless callsign present | Callsign overlay enable path. |
+| callsign_size | int | positive int | 14 | Base callsign size. |
+| callsign_position | string | same as timestamp positions | top-right | Callsign position setting. |
+| callsign_color | string | CSS color or #RRGGBB | white | Callsign text color. |
+| callsign_background_color | string | CSS color or #RRGGBB | black | Callsign background bar color. |
+| callsign_background_opacity | int | 0..100 | 50 | Callsign background opacity. |
+| custom_text | string | any text | empty | Replaces default mode/date/time body; callsign still prepended when required. |
+
+## [mmsstv]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| lib_path | string path | valid .so path | empty | Explicitly point to libsstv_encoder.so when needed. |
+| disable | bool | true/false | false | Force native-only mode behavior. |
+
+## [alsa]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| playback_device | string | ALSA device spec | env/default-driven | Pin output device (example: plughw:Headphones,0). |
+| mixer_device | string | ALSA card/device selector | env/default-driven | Mixer target for amixer controls. |
+| mixer_control | string | control name | env/default-driven | Preferred control (PCM, Headphone, Master, etc). |
+| target_volume_percent | int | 0..100 | 70 | Guardrail setpoint before TX playback. |
+| max_safe_volume_percent | int | 0..100 | 85 | Warning threshold for overdrive risk. |
+| enforce_volume | bool | true/false | true | Enable/disable mixer guardrails. |
+| aplay_timeout_seconds | int | >= 10 | 360 | Base playback timeout. |
+| aplay_timeout_margin_seconds | int | >= 10 | 45 | Margin added to expected duration for timeout. |
+
+## [gps]
+
+| Key | Type | Valid values | Default | Guidance |
+|---|---|---|---|---|
+| enable | bool | true/false | false | Enables GPS polling and overlay content. |
+| device | string path | serial device | /dev/serial0 | UART device used for NMEA reads. |
+| baud | int | positive int | 9600 | Typical u-blox default. |
+| units | enum | m, ft | m | Overlay altitude unit. |
+
+## [logging]
+
+Keys are documented in generated config but not loaded by load_config.
+Runtime logging behavior is controlled by CLI:
+- --debug
+- --log-file
+- --quiet-log-file
+
+## 5) CLI Reference (All Flags)
+
+## Information and guided help
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --explain | TOPIC | none | Print deep reference for one topic and exit. |
+| --help-topics | none | false | List explain topics and aliases. |
+| --help-quick | none | false | Print short operator startup flow. |
+| --help-flight | none | false | Print preflight checklist. |
+| --help-examples | none | false | Print command cookbook. |
+| --help-all | none | false | Show full argparse reference. |
+| --list-modes | none | false | List mode profiles and discovered capabilities. |
+| --list-schedules | none | false | List schedule presets and metrics. |
+| --generate-config | optional PATH | none | Emit commented config template and exit. |
+
+## Test and diagnostics
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --test | MODE | none | Single-shot capture->encode->optional TX path. |
+| --ptt-test | optional SECONDS | none / const 1.0 | GPIO-only PTT key test and exit. |
+| --alsa-volume-check | none | false | Mixer guardrail validation run and exit. |
+
+## Mission controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --radio | BAND | config/default | vhf, uhf, both. |
+| --tx-power | LEVEL | config/default | low or high. |
+| --pd-idle | MODE | config/default | release or sleep. |
+| --schedule | PRESET | config/default | hab_climb, hab_rapid, hab_cruise, hab_float. |
+| --total | N | config/default | Total capture count. |
+| --interval | SECS | config/default | Capture interval seconds. |
+| --callsign | CALL | config/default | Required for encode/test/mission workflows. |
+| --overlay-text | TEXT | config/default | Override body text of merged overlay. |
+| --no-tx | none | false | Skip transmit stage (capture+encode only). |
+
+## Radio protection and cooldown model
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --cooldown-method | METHOD | config/default | fixed, adaptive_dutycycle, adaptive_avg_dutycycle, estimated. |
+| --fixed-cooldown-seconds | SECS | config/default | Static cooldown for fixed method. |
+| --cooldown-scale | FACTOR | config/default | Global multiplier for computed cooldown. |
+| --duty-cycle | FRACTION | config/default | Adaptive method target duty; must be >0 and <=1.0. |
+| --min-captures | N | config/default | Min capture cycles between TX attempts. |
+| --estimated-flight-minutes | MIN | config/default | Estimated mission length for estimated method. |
+| --estimated-freefall-minutes | MIN | config/default | Estimated final descent window for estimated method. |
+
+## Encoding controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --format | FMT | config/default | wav, aiff, ogg |
+| --sample-rate | HZ | config/default | Audio sample rate |
+| --aspect | MODE | config/default | center, pad, stretch |
+
+## Path overrides
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --output-dir | PATH | config/default | Artifact output directory |
+| --slowframe | PATH | config/default | SlowFrame binary path |
+| --test-image | PATH | none | Source image for test mode |
+
+## MMSSTV controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --no-mmsstv | none | false | Force native-only mode availability |
+| --mmsstv-lib | PATH | none | Explicit libsstv_encoder.so path |
+
+## Logging controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --debug | none | false | Enable debug-level logging |
+| --log-file | PATH | none | Log to stdout + file |
+| --quiet-log-file | PATH | none | Log to file only |
+
+## ALSA controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --alsa-playback-device | DEVICE | none | Force playback target |
+| --alsa-mixer-device | DEVICE | none | Mixer selector |
+| --alsa-mixer-control | CONTROL | none | Mixer control name |
+| --alsa-target-volume | PERCENT | none | Guardrail setpoint |
+| --alsa-max-safe-volume | PERCENT | none | Safety threshold |
+| --no-alsa-volume-guardrails | none | false | Disable mixer guardrail enforcement |
+
+## GPS controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --gps | none | false | Enable GPS polling and overlay |
+| --gps-device | PATH | /dev/serial0 | UART device path |
+| --gps-baud | BAUD | 9600 | GPS baud rate |
+| --gps-units | UNITS | m | m or ft |
+
+## Config file controls
+
+| Flag | Arguments | Default | Guidance |
+|---|---|---|---|
+| --config | PATH | none | Load config before applying CLI overrides |
+| --generate-config | optional PATH | none | Write default template and exit |
+
+## 6) Validation and Guardrails
+
+The script enforces these checks:
+
+- --test and --ptt-test cannot be combined
+- --alsa-volume-check cannot be combined with --test or --ptt-test
+- --ptt-test must be > 0
+- --log-file and --quiet-log-file cannot be combined
+- --cooldown-method must be a valid method
+- --duty-cycle must be > 0 and <= 1.0
+- --fixed-cooldown-seconds must be >= 0
+- --estimated-flight-minutes must be > 0
+- --estimated-freefall-minutes must be >= 0
+- [radio] band, tx_power_level, pd_idle_mode, cooldown_method are validated enums
+- [gps] units must be m or ft
+- [encode] format and aspect are validated enums
+
+## 7) Deprecated Key Warnings
+
+Deprecated config keys are detected and warned during load.
+
+Current deprecated key:
+- [radio] rolling_duty_cycle_window_seconds
+
+Behavior:
+- warning emitted to stderr
+- key ignored
+
+## 8) Practical Use Guidance
+
+- Use fixed for strict deterministic cadence testing.
+- Use adaptive_dutycycle for simpler duty-target pacing.
+- Use adaptive_avg_dutycycle when your schedule mixes very short and very long modes and you want proportional fairness.
+- Use estimated when thermal conservatism matters and you have a realistic flight timeline estimate.
+- Keep cooldown_scale_factor as your top-level aggressiveness dial for field tuning.
+- Keep min_captures_between_transmissions non-zero to avoid back-to-back TX attempts when capture loop timing is very short.
+- Start with --no-tx bench tests whenever changing cooldown model parameters.
+
+## 9) Example Config Snippet (radio section)
+
+```ini
+[radio]
+band = vhf
+tx_power_level = low
+pd_idle_mode = release
+cooldown_method = estimated
+fixed_tx_cooldown_seconds = 30
+max_transmit_duty_cycle = 0.35
+cooldown_scale_factor = 1.00
+estimated_flight_duration_minutes = 120
+estimated_freefall_minutes = 30
+estimated_pcb_heat_transfer_coefficient = 0.4
+estimated_air_heat_transfer_coefficient = 10.0
+estimated_min_air_density_factor = 0.22
+estimated_effective_thermal_area_m2 = 0.0030
+estimated_tx_heat_power_low_w = 0.60
+estimated_tx_heat_power_high_w = 1.10
+estimated_cooldown_safety_factor = 1.10
+radio_wake_delay_seconds = 1.0
+ptt_key_delay_seconds = 0.1
+post_playback_delay_seconds = 0.5
 ```
 
-### Common Amateur Radio Frequencies
+## 10) Example Commands
 
-| Band | TX Freq | RX Freq | BW | Notes |
-|------|---------|---------|-----|-------|
-| **2m (VHF)** | | | |
-| Simplex | 145.5100 | 145.5100 | 12.5k | Common freq |
-| Repeater output | 145.0000+ | 145.6000+ | 12.5k | Area dependent |
-| **70cm (UHF)** | | | |
-| Simplex | 446.0000 | 446.0000 | 12.5k | Common UHF simplex |
-| Repeater output | 442.0000+ | 447.0000+ | 12.5k | Area dependent |
+- Full mission with config:
+  - python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg
 
-**Note:** Always check local regulations (FCC Part 97 in USA) before using any frequency.
+- Force fixed cooldown for a quick test:
+  - python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --cooldown-method fixed --fixed-cooldown-seconds 30
 
----
+- Adaptive average duty with conservative scaling:
+  - python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --cooldown-method adaptive_avg_dutycycle --duty-cycle 0.30 --cooldown-scale 1.25
 
-## 2. Audio & Filtering Configuration
-
-### Squelch (SQL)
-
-Controls when the radio is muted. Typical values:
-
-- `0` – Always open (never muted)
-- `2` – Very sensitive (picks up weak signals)
-- `4` – Medium (balanced, recommended for most)
-- `6` – Sensitive (requires stronger signals)
-- `8` – High squelch (only loud/close signals get through)
-
-Change in config:
-```cpp
-squelch: 4,  // Change to 2, 4, 6, or 8
-```
-
-### Volume
-
-Speaker output level:
-- `1` – Quietest
-- `4` – Moderate (recommended)
-- `6` – Loud
-- `8` – Maximum
-
-Change in config:
-```cpp
-volume: 6,  // Change to 1-8
-```
-
-### Bandwidth (DRA818 Modulation)
-
-Determines channel spacing and audio quality:
-
-```cpp
-bandwidth: DRA818_12K5,  // Narrow band, better selectivity
-// OR
-bandwidth: DRA818_25K,   // Wide band, better audio quality
-```
-
-- `DRA818_12K5` – 12.5 kHz (required for most amateur repeaters, default)
-- `DRA818_25K` – 25 kHz (wide bandwidth, less interference, better quality)
-
-### Filters
-
-Pre/High/Low filters improve audio quality and reduce interference:
-
-```cpp
-filter_pre: true,   // Pre-emphasis filter (typical)
-filter_high: true,  // High-pass filter (removes low rumble)
-filter_low: true,   // Low-pass filter (removes high noise)
-```
-
-Recommended settings:
-- All `true` for clean audio with filters
-- All `false` for raw unfiltered audio (testing only)
-- Mix as needed for your specific hardware/location
-
----
-
-## 3. CTCSS (PL Tone) Configuration
-
-CTCSS (Continuous Tone-Coded Squelch System) requires a specific audio tone to unlock a repeater.
-
-### CTCSS Tone Table (DRA818 supported)
-
-| Value | Frequency | Value | Frequency |
-|-------|-----------|-------|-----------|
-| 0 | None | 20 | 156.7 Hz |
-| 1 | 67.0 Hz | 21 | 159.8 Hz |
-| 2 | 71.9 Hz | 22 | 162.2 Hz |
-| 3 | 74.4 Hz | 23 | 165.5 Hz |
-| 4 | 77.0 Hz | 24 | 167.9 Hz |
-| 5 | 79.7 Hz | 25 | 171.3 Hz |
-| 6 | 82.5 Hz | 26 | 173.8 Hz |
-| 7 | 85.4 Hz | 27 | 177.3 Hz |
-| 8 | 88.5 Hz | 28 | 179.9 Hz |
-| 9 | 91.5 Hz | 29 | 183.5 Hz |
-| 10 | 94.8 Hz | 30 | 186.2 Hz |
-| 11 | 97.4 Hz | 31 | 189.9 Hz |
-| 12 | 100.0 Hz | 32 | 192.8 Hz |
-| 13 | 103.5 Hz | 33 | 196.6 Hz |
-| 14 | 107.2 Hz | 34 | 199.5 Hz |
-| 15 | 110.9 Hz | 35 | 203.5 Hz |
-| 16 | 114.8 Hz | 36 | 206.5 Hz |
-| 17 | 118.8 Hz | 37 | 210.7 Hz |
-| 18 | 123.0 Hz | 38 | 214.1 Hz |
-| 19 | 127.3 Hz | | |
-
-### Example: W5XYZ Repeater (requires 100.0 Hz CTCSS)
-
-```cpp
-RadioConfig VHF_CONFIG = {
-  145.3900,   // TX
-  145.0100,   // RX (offset -3.8 MHz typical)
-  4,
-  6,
-  12,         // ← CTCSS TX: 100.0 Hz (value 12)
-  12,         // ← CTCSS RX: 100.0 Hz (value 12)
-  DRA818_12K5,
-  true, true, true
-};
-```
-
----
-
-## 4. Build Flags
-
-At the top of the sketch (around line 19-25):
-
-```cpp
-// Uncomment one:
-#define ACTIVE_MODULE MODULE_VHF        // VHF only
-// #define ACTIVE_MODULE MODULE_UHF        // UHF only
-// #define ACTIVE_MODULE MODULE_BOTH       // Both (default)
-
-#define DEBUG_MODE 1   // 1=verbose, 0=quiet
-```
-
-### Module Selection Examples
-
-**Testing only VHF:**
-```cpp
-#define ACTIVE_MODULE MODULE_VHF
-```
-Feather will skip UHF init, config only VHF, and hand off PD/PTT/HL to Pi. Useful for isolated testing.
-
-**Testing only UHF:**
-```cpp
-#define ACTIVE_MODULE MODULE_UHF
-```
-Skip VHF, test UHF in isolation (useful if VHF has hardware issues).
-
-**Production (both):**
-```cpp
-#define ACTIVE_MODULE MODULE_BOTH
-```
-Configure and test both radios at startup.
-
-### Debug Mode
-
-**Development (verbose):**
-```cpp
-#define DEBUG_MODE 1
-```
-Outputs every step: handshakes, AT commands, pin reads, periodic status. ~10-20 lines per 10 seconds.
-
-**Production (quiet):**
-```cpp
-#define DEBUG_MODE 0
-```
-Only critical messages: config success/failure, major errors. ~1-2 lines per 10 seconds.
-
----
-
-## 5. Complete Configuration Example
-
-### Example 1: 2m/70cm APRS System (Simplex)
-
-```cpp
-// VHF 2m APRS (144.39 MHz primary)
-RadioConfig VHF_CONFIG = {
-  144.3900, 144.3900,
-  2,        // low squelch (weak APRS packets)
-  4,        // moderate volume
-  0,        // no CTCSS
-  0,
-  DRA818_12K5,
-  true, true, true
-};
-
-// UHF 70cm cross-band (446.0 MHz simplex)
-RadioConfig UHF_CONFIG = {
-  446.0000, 446.0000,
-  2,        // low squelch
-  4,
-  0, 0,
-  DRA818_12K5,
-  true, true, true
-};
-
-#define ACTIVE_MODULE MODULE_BOTH
-#define DEBUG_MODE 1    // Enable for APRS troubleshooting
-```
-
-### Example 2: Repeater Linked System (with CTCSS)
-
-```cpp
-// VHF: W5XYZ Repeater (145.01 RX, 145.39 TX, PL 100.0)
-RadioConfig VHF_CONFIG = {
-  145.3900,  // TX (higher freq)
-  145.0100,  // RX (lower freq, typical -3.8 MHz offset)
-  4,         // squelch
-  6,         // louder volume for repeater
-  12,        // CTCSS TX: 100.0 Hz (value 12)
-  12,        // CTCSS RX: 100.0 Hz (value 12)
-  DRA818_12K5,
-  true, true, true
-};
-
-// UHF: K5LLL Repeater (442.1 RX, 447.1 TX, PL 103.5)
-RadioConfig UHF_CONFIG = {
-  447.1000,  // TX (higher freq)
-  442.1000,  // RX (lower freq, typical -5 MHz offset)
-  4,
-  6,
-  13,        // CTCSS TX: 103.5 Hz (value 13)
-  13,        // CTCSS RX: 103.5 Hz (value 13)
-  DRA818_25K,  // Wider BW for repeater audio quality
-  true, true, true
-};
-
-#define ACTIVE_MODULE MODULE_BOTH
-#define DEBUG_MODE 0    // Less verbose for production
-```
-
-### Example 3: Digital Voice (DMR/Fusion) Test
-
-```cpp
-// Set frequencies to digital voice repeaters
-// (DRA818 itself doesn't handle digital modes, but can provide RF link)
-
-RadioConfig VHF_CONFIG = {
-  145.3900, 145.0100,
-  4, 6,
-  0, 0,  // No PL tone, digital modes use other signaling
-  DRA818_12K5,
-  true, true, true
-};
-
-#define ACTIVE_MODULE MODULE_VHF
-#define DEBUG_MODE 1    // Verbose for debugging digital link
-```
-
----
-
-## 6. Pin Customization (Advanced)
-
-If your HamWing board has different pin assignments, edit the pin definitions section (lines ~45-75):
-
-```cpp
-#define PIN_PD       12    // HamWing power-down (shared)
-#define PIN_HL       18    // HamWing power level (shared)
-#define PIN_LED      LED_BUILTIN  // Change to your LED pin
-
-#define PIN_V_DRA_RX 0     // VHF UART RX
-#define PIN_V_DRA_TX 1     // VHF UART TX
-#define PIN_V_PTT    16    // VHF PTT (shared)
-#define PIN_V_SQL    14    // VHF squelch analog
-
-#define PIN_U_DRA_RX 11    // UHF UART RX
-#define PIN_U_DRA_TX 10    // UHF UART TX
-#define PIN_U_PTT    17    // UHF PTT (shared)
-#define PIN_U_SQL    15    // UHF squelch analog
-```
-
-**Warning:** Changing these pins requires understanding SERCOM mux and may break your build. Only modify if your board is wired differently.
-
----
-
-## 7. Testing Checklist
-
-After customizing, verify with this sequence:
-
-```
-[ ] 1. Edit VHF_CONFIG and UHF_CONFIG frequencies to match your radios
-[ ] 2. Set ACTIVE_MODULE to MODULE_VHF, MODULE_UHF, or MODULE_BOTH as needed
-[ ] 3. Set DEBUG_MODE to 1 for testing, 0 for quiet operation
-[ ] 4. Compile and upload to Feather M0
-[ ] 5. Open Serial Monitor (115200 baud), watch startup sequence
-[ ] 6. Should see: "Config state VHF/UHF: OK / OK"
-[ ] 7. Should see: "Handing off control to Raspberry Pi"
-[ ] 8. LED should fade in and out (success) or fast blink (failure)
-[ ] 9. Remove hat (if present) and test again—both radios should still config OK
-[ ] 10. If UHF failed with hat installed, follow Pi UART disable guide (PI_SETUP_GUIDE.md)
-```
-
----
-
-## Troubleshooting Configuration
-
-| Symptom | Check |
-|---------|-------|
-| VHF config fails | Is D0/D1 wired to VHF module TX/RX? Is VHF module powered? |
-| UHF config fails with hat present | Follow PI_SETUP_GUIDE.md Phase 1 (disable Pi UART) |
-| UHF config fails with hat removed | Is D10/D11 wired to UHF module TX/RX? Are JP1/JP2 soldered on HamWing? |
-| Radio keys but sounds bad | Raise volume (6-8), check audio path, verify filters settings |
-| Radio doesn't key from Pi | Did you run `hamwing_gpio_init.py`? Verify GPIO27/4/22 in use |
-| LED not responding to config | Check `PIN_LED` definition, is LED_BUILTIN available on your Feather? |
-
----
-
-## Advanced: Custom AT Commands
-
-If you need finer control (not in the DRA818 library), the sketch can be extended:
-
-```cpp
-// Add to a new function in the RADIO CONFIGURATION section:
-bool sendCustomAtCommand(Stream &serial, const char *cmd, const char *expectedResp) {
-  debugPrint("AT", cmd);
-  serial.println(cmd);
-  
-  unsigned long timeout = millis() + 500;
-  String response = "";
-  while (millis() < timeout) {
-    if (serial.available()) {
-      response += (char)serial.read();
-    }
-  }
-  
-  if (response.indexOf(expectedResp) >= 0) {
-    debugPrint("RESP", response.c_str());
-    return true;
-  }
-  return false;
-}
-```
-
-Then call from `setup()` after radio config for custom AT sequences.
-
----
-
-## Next Steps
-
-1. Choose your frequencies from the tables above
-2. Update VHF_CONFIG and UHF_CONFIG in the sketch
-3. Set ACTIVE_MODULE and DEBUG_MODE appropriately
-4. Compile, upload, and test
-5. Follow PI_SETUP_GUIDE.md to integrate with Raspberry Pi
-
-Good luck with your deployment! 73 de HamWing_RadioConfig
+- Estimated thermal model with longer mission profile:
+  - python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --cooldown-method estimated --estimated-flight-minutes 150 --estimated-freefall-minutes 35
