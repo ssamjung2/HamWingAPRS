@@ -28,6 +28,7 @@ logger = logging.getLogger("pi_sstv")
 # Paths and constants
 BASE_DIR = "/home/pi-user"
 DEFAULT_CONFIG_PATH = os.path.join(BASE_DIR, "pi_sstv.cfg")
+GENERATE_CONFIG_USE_CONFIG_PATH = "__use_config_path__"
 TIMESTAMPED_DIR = os.path.join(BASE_DIR, "Desktop/HAB")
 PI_SSTV_BIN = os.path.join(BASE_DIR, "pi-sstv", "pi-sstv")
 
@@ -79,14 +80,16 @@ SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY = 50
 
 # Uncomment and adjust if you want a different default mode or output behavior.
 # Common modes:
-#   Native: bw24, m4, r36, m2, s2, r72, s1, m1
-#   MMSSTV: robot8bw, robot12bw, pd50, pd90, pd120, pd160, pd180, pd240, pd290, fax480
+#   Native: bw24, m1, m2, r36, r72, s1, s2, sdx
+#   Common curated MMSSTV: robot8bw, robot12bw, pd50, pd90, pd120, pd160, pd180, pd240, pd290, fax480
 # Formats: wav, aiff, ogg
 # Aspect modes: center, pad, stretch
 
 PIC_INTERVAL = 10
 PIC_TOTAL = 500
-MIN_CAPTURES_BETWEEN_TRANSMISSIONS = 12
+# Keep the default gate time-based; operators can still add a hard capture-count
+# floor with --min-captures or the config file when they need it.
+MIN_CAPTURES_BETWEEN_TRANSMISSIONS = 0
 MAX_TRANSMIT_DUTY_CYCLE = 0.35
 TX_COOLDOWN_METHOD = "adaptive_dutycycle"
 FIXED_TX_COOLDOWN_SECONDS = 30.0
@@ -315,13 +318,6 @@ MODE_PROFILES = {
         image_height=120,
         description="Fast monochrome native mode for low duty-cycle updates.",
     ),
-    "m4": ModeProfile(
-        name="m4",
-        duration_seconds=29,
-        cooldown_seconds=120,
-        image_height=256,
-        description="Fast native Martin color mode; half the airtime of M2; ideal for rapid-update ascent phases.",
-    ),
     "r36": ModeProfile(
         name="r36",
         duration_seconds=36,
@@ -489,6 +485,56 @@ def canonicalize_mode_name(mode_name: Optional[str]) -> Optional[str]:
         return MODE_ALIASES[normalized]
 
     return raw
+
+
+def _normalize_schedule_mode_name(mode_name: Optional[str]) -> Optional[str]:
+    if mode_name is None:
+        return None
+    raw = mode_name.strip().lower()
+    if not raw:
+        return None
+    return canonicalize_mode_name(raw) or raw
+
+
+def _is_valid_schedule_mode_token(mode_name: str) -> bool:
+    return re.fullmatch(r"[a-z0-9][a-z0-9_/-]*", mode_name) is not None
+
+
+def _parse_schedule_mode_list(raw_value: str, context: str) -> Tuple[str, ...]:
+    tokens = [
+        _normalize_schedule_mode_name(token)
+        for token in re.split(r"[\s,]+", raw_value)
+        if token.strip()
+    ]
+    modes = tuple(token for token in tokens if token)
+    if not modes:
+        raise ValueError(f"{context}: at least one mode is required")
+
+    invalid_tokens = [token for token in modes if not _is_valid_schedule_mode_token(token)]
+    if invalid_tokens:
+        raise ValueError(f"{context}: invalid mode token(s): {', '.join(invalid_tokens)}")
+
+    return modes
+
+
+def get_effective_schedule_fallback_mode(profile_name: Optional[str] = None) -> Optional[str]:
+    normalized_profile_name = _normalize_schedule_profile_name(profile_name)
+    profile_fallback = None
+    if normalized_profile_name is not None:
+        profile_fallback = TRANSMIT_SCHEDULE_FALLBACK_MODES.get(normalized_profile_name)
+    return _normalize_schedule_mode_name(profile_fallback or GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+
+
+def describe_schedule_fallback_policy(profile_name: Optional[str] = None) -> str:
+    normalized_profile_name = _normalize_schedule_profile_name(profile_name)
+    profile_fallback = None
+    if normalized_profile_name is not None:
+        profile_fallback = _normalize_schedule_mode_name(TRANSMIT_SCHEDULE_FALLBACK_MODES.get(normalized_profile_name))
+
+    global_fallback = _normalize_schedule_mode_name(GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+    if profile_fallback:
+        return f"profile={profile_fallback}  global={global_fallback or '-'}"
+    return f"profile=<inherit>  global={global_fallback or '-'}"
 
 
 def get_protocol_token_for_mode(mode_name: str) -> str:
@@ -668,23 +714,22 @@ def refresh_mode_profiles_from_slowframe() -> Tuple[Set[str], Set[str], int]:
     return _augment_mode_profiles_from_slowframe_output(output)
 
 TRANSMIT_SCHEDULE_PROFILE = "hab_cruise"
-TRANSMIT_SCHEDULE_PROFILES = {
+BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
     # hab_climb: absolute maximum update rate, mono-heavy — steepest part of the climb.
     "hab_climb": (
         "robot8bw",
         "robot12bw",
         "bw24",
-        "m4",
+        "r36",
         "robot12bw",
         "r36",
     ),
     # hab_rapid: fast color rotation with short cooldowns — upper ascent / release phase.
     "hab_rapid": (
         "robot12bw",
-        "m4",
         "r36",
         "robot12bw",
-        "m4",
+        "r36",
         "pd50",
     ),
     # hab_cruise: balanced default — mixes status frames and quality shots across the full flight.
@@ -692,9 +737,9 @@ TRANSMIT_SCHEDULE_PROFILES = {
         "robot12bw",
         "r36",
         "m2",
-        "pd90",
+        "pd120",
         "s2",
-        "r72",
+        "robot12bw",
         "m1",
         "pd120",
     ),
@@ -706,11 +751,11 @@ TRANSMIT_SCHEDULE_PROFILES = {
         "pd120",
         "robot12bw",
         "pd180",
-        "pd240",
+        "r36",        
         "pd290",
     ),
 }
-TRANSMIT_SCHEDULE_DESCRIPTIONS = {
+BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS = {
     "hab_climb":  "Maximum update-rate profile. Monochrome frames dominate to minimise cooldown "
                   "gaps during the steepest part of the climb.",
     "hab_rapid":  "Short bursts + one PD color shot per rotation. Tuned for higher throughput "
@@ -720,6 +765,17 @@ TRANSMIT_SCHEDULE_DESCRIPTIONS = {
     "hab_float":  "Quality-first rotation including PD290 opportunities. Best with added "
                   "heatsinking and continuous thermal monitoring.",
 }
+BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES = {
+    name: None for name in BUILTIN_TRANSMIT_SCHEDULE_PROFILES
+}
+SCHEDULE_PROFILE_SECTION_PREFIX = "schedule_profile "
+GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK = "r36"
+
+TRANSMIT_SCHEDULE_PROFILES = {
+    name: tuple(modes) for name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items()
+}
+TRANSMIT_SCHEDULE_DESCRIPTIONS = dict(BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS)
+TRANSMIT_SCHEDULE_FALLBACK_MODES = dict(BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES)
 
 TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(
     TRANSMIT_SCHEDULE_PROFILE,
@@ -727,9 +783,58 @@ TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(
 )
 
 
+def _reset_schedule_profile_registry() -> None:
+    global TRANSMIT_SCHEDULE_PROFILES, TRANSMIT_SCHEDULE_DESCRIPTIONS, TRANSMIT_SCHEDULE_FALLBACK_MODES
+
+    TRANSMIT_SCHEDULE_PROFILES = {
+        name: tuple(modes) for name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items()
+    }
+    TRANSMIT_SCHEDULE_DESCRIPTIONS = dict(BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS)
+    TRANSMIT_SCHEDULE_FALLBACK_MODES = dict(BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES)
+
+
+def _normalize_schedule_profile_name(profile_name: Optional[str]) -> Optional[str]:
+    if profile_name is None:
+        return None
+    normalized = profile_name.strip().lower()
+    return normalized or None
+
+
+def _validate_schedule_profiles(strict_defined_modes: bool = True) -> None:
+    invalid_by_profile = {}
+    for profile_name, modes in TRANSMIT_SCHEDULE_PROFILES.items():
+        invalid_modes: List[str] = []
+        for mode_name in modes:
+            normalized_mode = _normalize_schedule_mode_name(mode_name)
+            if not normalized_mode or not _is_valid_schedule_mode_token(normalized_mode):
+                invalid_modes.append(mode_name)
+                continue
+            if strict_defined_modes and normalized_mode not in MODE_PROFILES:
+                invalid_modes.append(mode_name)
+        if invalid_modes:
+            invalid_by_profile[profile_name] = invalid_modes
+
+    if invalid_by_profile:
+        details = "; ".join(
+            f"{profile_name}: {', '.join(invalid_modes)}"
+            for profile_name, invalid_modes in sorted(invalid_by_profile.items())
+        )
+        label = "undefined or invalid" if strict_defined_modes else "invalid"
+        raise RuntimeError(f"Schedule profile contains {label} mode(s): {details}")
+
+
+_validate_schedule_profiles()
+
+
 def generate_default_config(path: str):
     """Write a fully-commented default configuration file to *path*."""
     schedules = ", ".join(TRANSMIT_SCHEDULE_PROFILES.keys())
+    builtin_schedule_lines: List[str] = []
+    for schedule_name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items():
+        description = BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS.get(schedule_name, "")
+        builtin_schedule_lines.append(f"#   {schedule_name:<10} - {description}")
+        builtin_schedule_lines.append(f"#               {' -> '.join(modes)}")
+    builtin_schedule_block = "\n".join(builtin_schedule_lines)
     GPS_ENABLED_STR = "true" if GPS_ENABLED else "false"
     content = f"""\
 # =============================================================================
@@ -779,11 +884,20 @@ def generate_default_config(path: str):
 
 # Transmit schedule preset.  Controls which SSTV modes are used in rotation.
 # Available presets: {schedules}
-#   hab_climb  - Mono-heavy maximum update rate; for the steepest climb phase.
-#   hab_rapid  - Fast color bursts; best for upper ascent and release.
-#   hab_cruise - Balanced default; works across the full flight envelope.
-#   hab_float  - Quality-first PD modes; suited for float altitude / science windows.
+# Built-in preset details:
+{builtin_schedule_block}
+# Additional custom presets may be added with [schedule_profile <name>] sections below.
+# CLI note: --schedule NAME overrides this value after the config file is loaded.
 schedule = {TRANSMIT_SCHEDULE_PROFILE}
+
+# Global default mode used when a scheduled mode is unavailable and its own
+# fallback chain is exhausted.
+# Fallback order during scheduling is:
+#   1. The requested mode's curated fallback chain.
+#   2. The active profile's unavailable_mode_fallback, if set.
+#   3. This global [mission] unavailable_mode_fallback.
+#   4. A final safety fallback to r36, then the first available mode.
+unavailable_mode_fallback = {GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK}
 
 # Total number of image captures before the mission ends.
 total = {PIC_TOTAL}
@@ -802,6 +916,30 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 # Skip all radio transmission.  Images are captured and encoded but never
 # played back.  Useful for bench testing without a radio connected.
 # no_tx = false
+
+
+# -----------------------------------------------------------------------------
+# [schedule_profile custom]  Optional operator-defined schedule profile
+# -----------------------------------------------------------------------------
+# Any section named [schedule_profile <name>] becomes a selectable schedule.
+# Names are normalized to lowercase when loaded.
+# The modes value may use commas, whitespace, or both as separators.
+# Mode tokens are validated when the config loads; actual encoder availability
+# is resolved later at runtime after SlowFrame mode discovery.
+#
+# Set [mission] schedule = <name> to activate it, or override from the CLI:
+#   python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --schedule custom
+#
+# Example activation using a global mission fallback:
+#   [mission]
+#   schedule = custom
+#   unavailable_mode_fallback = r36
+#
+# Full example custom profile with its own default override:
+# [schedule_profile custom]
+# modes = robot12bw, r36, pd50, pd90
+# description = Operator-defined mixed rapid schedule.
+# unavailable_mode_fallback = m2
 
 
 # -----------------------------------------------------------------------------
@@ -1089,6 +1227,8 @@ def load_config(path: str):
     silently ignored to allow forward-compatible config files.
     """
     global TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE
+    global TRANSMIT_SCHEDULE_PROFILES, TRANSMIT_SCHEDULE_DESCRIPTIONS, TRANSMIT_SCHEDULE_FALLBACK_MODES
+    global GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK
     global PIC_TOTAL, PIC_INTERVAL, STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
     global OVERLAY_TEXT_OVERRIDE
     global MIN_CAPTURES_BETWEEN_TRANSMISSIONS
@@ -1123,6 +1263,7 @@ def load_config(path: str):
 
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(path)
+    _reset_schedule_profile_registry()
 
     def _warn_deprecated_keys() -> None:
         for section_name, deprecated_map in DEPRECATED_CONFIG_KEYS.items():
@@ -1168,8 +1309,63 @@ def load_config(path: str):
     DATA_CSV          = _str("paths", "data_csv",     DATA_CSV)
     SSTV_WAV          = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
 
+    # [schedule_profile <name>]
+    for section_name in cfg.sections():
+        lowered_section = section_name.lower()
+        if not lowered_section.startswith(SCHEDULE_PROFILE_SECTION_PREFIX):
+            continue
+
+        profile_name = _normalize_schedule_profile_name(section_name[len(SCHEDULE_PROFILE_SECTION_PREFIX):])
+        if not profile_name:
+            print(
+                f"Config [{section_name}]: section name must include a profile name after '{SCHEDULE_PROFILE_SECTION_PREFIX}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        modes_raw = cfg.get(section_name, "modes", fallback="")
+        try:
+            parsed_modes = _parse_schedule_mode_list(modes_raw, f"Config [{section_name}] modes")
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+
+        description = cfg.get(section_name, "description", fallback="").strip()
+        if not description:
+            description = f"Operator-defined schedule loaded from config section [{section_name}]."
+
+        fallback_raw = cfg.get(section_name, "unavailable_mode_fallback", fallback="").strip()
+        fallback_mode = _normalize_schedule_mode_name(fallback_raw) if fallback_raw else None
+        if fallback_mode and not _is_valid_schedule_mode_token(fallback_mode):
+            print(
+                f"Config [{section_name}] unavailable_mode_fallback: invalid mode token '{fallback_raw}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        TRANSMIT_SCHEDULE_PROFILES[profile_name] = parsed_modes
+        TRANSMIT_SCHEDULE_DESCRIPTIONS[profile_name] = description
+        TRANSMIT_SCHEDULE_FALLBACK_MODES[profile_name] = fallback_mode
+
+    try:
+        _validate_schedule_profiles(strict_defined_modes=False)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
     # [mission]
-    schedule = _str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE)
+    GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK = _normalize_schedule_mode_name(
+        _str("mission", "unavailable_mode_fallback", GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+    ) or GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK
+    if not _is_valid_schedule_mode_token(GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK):
+        print(
+            "Config [mission] unavailable_mode_fallback: "
+            f"invalid mode token '{GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    schedule = _normalize_schedule_profile_name(_str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE))
     if schedule not in TRANSMIT_SCHEDULE_PROFILES:
         print(f"Config [mission] schedule: unknown preset '{schedule}'. "
               f"Valid: {', '.join(TRANSMIT_SCHEDULE_PROFILES)}", file=sys.stderr)
@@ -1872,27 +2068,27 @@ SSTV mode reference.  All durations are approximate over-the-air TX times.
 
 Native modes (no MMSSTV library required):
     Name         TX (s)   Cooldown (s)   WxH       Description
-    bw24             24            120   320x120   Fast monochrome, low duty-cycle updates
-    m4               29            135   320x256   Fast Martin color, good for rapid ascent updates
-    r36              36            150   320x240   Fast native color, regular updates
-    m2               58            240   320x256   Balanced, strong compatibility
-    s2               71            300   320x256   Scottie 2, good compatibility
-    r72              72            300   320x240   Higher-quality Robot color
-    s1              110            480   320x256   Scottie 1, best native quality
-    m1              114            480   320x256   Martin 1, high-quality, less frequent
+    bw24             24            105   320x120   Fast monochrome, low duty-cycle updates
+    r36              36            135   320x240   Fast native color, regular updates
+    m2               58            210   320x256   Balanced, strong compatibility
+    s2               71            255   320x256   Scottie 2, good compatibility
+    r72              72            255   320x240   Higher-quality Robot color
+    s1              110            420   320x256   Scottie 1, best native quality
+    m1              114            420   320x256   Martin 1, high-quality, less frequent
+    sdx             269            780   320x256   Scottie DX, long-duration high-detail native mode
 
-MMSSTV library modes (require libsstv_encoder.so):
+Curated MMSSTV library modes (require libsstv_encoder.so; additional modes may be auto-profiled from slowframe -L):
     Name         TX (s)   Cooldown (s)   WxH       Fallback   Description
-    robot8bw          8             90   160x120   bw24       Ultra-fast monochrome status frame
-    robot12bw        12             90   160x120   bw24       Very fast monochrome
-    pd50             50            240   320x256   m2         Fast PD color
-    pd90             90            360   320x256   r36        Popular fast color
-    pd120           120            540   640x496   m1         Higher-quality, larger image
-    pd160           160            660   512x400   m1         Slower quality mode
-    pd180           180            720   640x496   m1         High-detail mission snapshot
-    pd240           240            900   640x496   m1         Very high quality PD mode
-    pd290           290           1080   800x616   pd180      Highest quality PD mode
-    fax480          180            720   512x480   m1         High-detail, test windows
+    robot8bw          8             75   160x120   bw24       Ultra-fast monochrome status frame
+    robot12bw        12             75   160x120   bw24       Very fast monochrome
+    pd50             50            210   320x256   m2         Fast PD color
+    pd90             90            300   320x256   r36        Popular fast color
+    pd120           120            420   640x496   m1         Higher-quality, larger image
+    pd160           160            540   512x400   m1         Slower quality mode
+    pd180           180            600   640x496   m1         High-detail mission snapshot
+    fax480          180            600   512x480   m1         High-detail, test windows
+    pd240           240            720   640x496   m1         Very high quality PD mode
+    pd290           290            840   800x616   pd180      Highest quality PD mode
 
 Mode geometry
     Each mode encodes at a nominal raster width and height. SlowFrame scales the
@@ -1933,11 +2129,11 @@ rather than always using the same mode.  This varies image quality, duty cycle,
 and receiver-side interest across the flight.
 
 Presets
-  hab_climb    robot8bw -> robot12bw -> bw24 -> m4 -> robot12bw -> r36
+    hab_climb    robot8bw -> robot12bw -> bw24 -> r36 -> robot12bw -> r36
                Maximum update rate.  Monochrome-heavy to keep cooldowns short
                during the steepest part of the climb.
 
-  hab_rapid    robot12bw -> m4 -> r36 -> robot12bw -> m4 -> pd50
+    hab_rapid    robot12bw -> r36 -> r36 -> robot12bw -> r36 -> pd50
                Fast color bursts.  Best for upper ascent and the release phase
                where update rate still matters but color shots are welcome.
 
@@ -1953,6 +2149,27 @@ Presets
 Selecting a preset
   python3 pi_sstv.py --schedule hab_rapid
   python3 pi_sstv.py --schedule hab_float --mmsstv-lib /path/to/libsstv_encoder.so
+
+Custom schedule profiles in config
+    Config files may define additional profiles with sections named:
+        [schedule_profile <name>]
+
+    Example:
+        [schedule_profile custom]
+        modes = robot12bw, r36, pd50, pd90
+        description = Operator-defined mixed rapid schedule.
+        unavailable_mode_fallback = r36
+
+    Then select it with:
+        [mission]
+        schedule = custom
+
+Unavailable-mode fallback defaults
+    If a scheduled mode is unavailable, the script first follows that mode's
+    curated fallback chain. If that chain is exhausted, it tries:
+        1. The active schedule profile's unavailable_mode_fallback, when set.
+        2. The global [mission] unavailable_mode_fallback.
+        3. A final built-in safety fallback to r36, then the first available mode.
 
 Transmission gating
   A transmission only proceeds when ALL of the following are satisfied:
@@ -1987,8 +2204,8 @@ Duty-cycle protection
     --fixed-cooldown-seconds SECS  Static cooldown for fixed method.
     --estimated-flight-minutes MIN Flight duration estimate for thermal method.
     --estimated-freefall-minutes MIN Final descent window for thermal method.
-  --min-captures N        Hard minimum captures between any two transmissions.
-                          Default: {min_captures}.
+    --min-captures N        Optional hard minimum captures between any two
+                                                    transmissions. Default: {min_captures}.
 
 EXAMPLES
   Fast-color schedule, 200 captures, 8-second intervals:
@@ -2881,10 +3098,10 @@ def parse_args(argv: Optional[List[str]] = None):
     mission.add_argument(
         "--schedule",
         metavar="PRESET",
-        choices=list(TRANSMIT_SCHEDULE_PROFILES.keys()),
         default=None,
         help=(
-            f"Transmit schedule preset. Choices: {', '.join(TRANSMIT_SCHEDULE_PROFILES)}. "
+            f"Transmit schedule preset. Built-in choices: {', '.join(TRANSMIT_SCHEDULE_PROFILES)}. "
+            "Config-loaded [schedule_profile <name>] sections may add more. "
             f"Default: {TRANSMIT_SCHEDULE_PROFILE}."
         ),
     )
@@ -3072,7 +3289,7 @@ def parse_args(argv: Optional[List[str]] = None):
         action="store_true",
         help=(
             "Disable MMSSTV library support. Only native SlowFrame modes are used "
-            "(bw24, m4, r36, m2, s2, r72, s1, m1). Equivalent to setting "
+            "(bw24, m1, m2, r36, r72, s1, s2, sdx). Equivalent to setting "
             f"SLOWFRAME_NO_MMSSTV=1 in the environment."
         ),
     )
@@ -3223,11 +3440,11 @@ def parse_args(argv: Optional[List[str]] = None):
         "--generate-config",
         metavar="PATH",
         nargs="?",
-        const=DEFAULT_CONFIG_PATH,
+        const=GENERATE_CONFIG_USE_CONFIG_PATH,
         default=None,
         help=(
             "Write a fully-documented default configuration file to PATH and exit. "
-            f"If PATH is omitted, writes to {DEFAULT_CONFIG_PATH}. "
+            f"If PATH is omitted, writes to --config PATH when provided, otherwise {DEFAULT_CONFIG_PATH}. "
             "Edit the file then run:  python3 pi_sstv.py --config PATH"
         ),
     )
@@ -3359,6 +3576,7 @@ def list_schedules():
         active_tag   = "  ◀ active" if is_active else ""
         description  = TRANSMIT_SCHEDULE_DESCRIPTIONS.get(preset_name, "")
         profiles     = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
+        fallback_policy = describe_schedule_fallback_policy(preset_name)
 
         total_tx    = sum(p.duration_seconds for p in profiles)
         total_cool  = sum(p.cooldown_seconds  for p in profiles)
@@ -3409,6 +3627,7 @@ def list_schedules():
         print(f"  {'Total cooldown':22}: {total_cool} s")
         print(f"  {'Min rotation time':22}: {total_cycle} s  ({cycle_min:.1f} min)")
         print(f"  {'Max duty cycle':22}: {duty:.1f}%")
+        print(f"  {'Unavailable default':22}: {fallback_policy}")
         if mmsstv_steps:
             print(f"  {'MMSSTV library needed':22}: yes")
             print(f"  {'Fallbacks (unique)':22}: {',  '.join(unique_fb)}")
@@ -3451,6 +3670,29 @@ def build_text_overlay(text, size, position, color, background_color=None, backg
 
 def get_native_modes():
     return {name for name, profile in MODE_PROFILES.items() if not profile.requires_mmsstv}
+
+
+def _log_curated_mode_inventory_audit(
+    discovered_native: Set[str],
+    discovered_mmsstv: Set[str],
+    mmsstv_library_detected: bool,
+) -> None:
+    curated_native = {name for name, profile in MODE_PROFILES.items() if not profile.requires_mmsstv}
+    missing_native = sorted(curated_native - discovered_native)
+    if missing_native:
+        log(
+            "SlowFrame discovery: WARNING — curated native mode profile(s) were not reported by slowframe -L: "
+            + ", ".join(missing_native)
+        )
+
+    if mmsstv_library_detected and discovered_mmsstv:
+        curated_mmsstv = {name for name, profile in MODE_PROFILES.items() if profile.requires_mmsstv}
+        missing_mmsstv = sorted(curated_mmsstv - discovered_mmsstv)
+        if missing_mmsstv:
+            log_debug(
+                "SlowFrame discovery: curated MMSSTV mode profile(s) not explicitly listed by slowframe -L: "
+                + ", ".join(missing_mmsstv)
+            )
 
 
 def discover_slowframe_capabilities():
@@ -3544,6 +3786,11 @@ def discover_slowframe_capabilities():
     discovered_native, discovered_mmsstv, added_count = _augment_mode_profiles_from_slowframe_output(output)
     state.available_modes.update(discovered_native)
     state.available_modes.update(discovered_mmsstv)
+    _log_curated_mode_inventory_audit(
+        discovered_native,
+        discovered_mmsstv,
+        state.mmsstv_library_detected,
+    )
     if added_count:
         log(f"SlowFrame discovery: added {added_count} auto-profiled mode(s) from -L listing")
 
@@ -3578,41 +3825,60 @@ def discover_slowframe_capabilities():
     return state
 
 
-def resolve_mode_name(requested_mode, available_modes):
-    requested_mode = canonicalize_mode_name(requested_mode) or requested_mode
+def resolve_mode_name(requested_mode, available_modes, default_fallback_mode: Optional[str] = None):
+    requested_mode = _normalize_schedule_mode_name(requested_mode) or requested_mode
+    fallback_candidates: List[str] = []
+
+    configured_default = _normalize_schedule_mode_name(default_fallback_mode)
+    if configured_default and configured_default != requested_mode:
+        fallback_candidates.append(configured_default)
+
+    global_default = _normalize_schedule_mode_name(GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+    if global_default and global_default != requested_mode and global_default not in fallback_candidates:
+        fallback_candidates.append(global_default)
+
+    if requested_mode != "r36" and "r36" not in fallback_candidates:
+        fallback_candidates.append("r36")
+
     current_mode = requested_mode
     visited_modes = set()
 
-    while current_mode and current_mode not in visited_modes:
-        visited_modes.add(current_mode)
-        if current_mode in available_modes:
-            if current_mode != requested_mode:
-                log(f"Mode resolution: {requested_mode} → {current_mode} (fallback)")
-            return current_mode
+    while True:
+        while current_mode and current_mode not in visited_modes:
+            visited_modes.add(current_mode)
+            if current_mode in available_modes:
+                if current_mode != requested_mode:
+                    log(f"Mode resolution: {requested_mode} → {current_mode} (fallback)")
+                return current_mode
 
-        current_profile = MODE_PROFILES.get(current_mode)
+            current_profile = MODE_PROFILES.get(current_mode)
 
-        # Emit a specific warning when an MMSSTV mode is unavailable so the
-        # operator knows exactly why the fallback is happening.
-        if current_profile and current_profile.requires_mmsstv:
-            log(
-                f"Mode resolution: {current_mode} requires MMSSTV library but it is not available"
-                + (f"; use --mmsstv-lib to provide the library path" if current_mode == requested_mode else "")
-            )
-        else:
-            log_debug(f"Mode resolution: {current_mode} not available, trying fallback")
+            # Emit a specific warning when an MMSSTV mode is unavailable so the
+            # operator knows exactly why the fallback is happening.
+            if current_profile and current_profile.requires_mmsstv:
+                log(
+                    f"Mode resolution: {current_mode} requires MMSSTV library but it is not available"
+                    + (f"; use --mmsstv-lib to provide the library path" if current_mode == requested_mode else "")
+                )
+            else:
+                log_debug(f"Mode resolution: {current_mode} not available, trying fallback")
 
-        next_mode = current_profile.fallback_mode if current_profile else None
-        if next_mode:
-            log_debug(f"Mode resolution: trying fallback: {next_mode}")
-        current_mode = next_mode
+            next_mode = _normalize_schedule_mode_name(current_profile.fallback_mode) if current_profile else None
+            if next_mode:
+                log_debug(f"Mode resolution: trying fallback: {next_mode}")
+            current_mode = next_mode
 
-    if "r36" in available_modes:
-        log(f"Mode resolution: fallback chain exhausted for {requested_mode}, using r36")
-        return "r36"
+        if not fallback_candidates:
+            break
+
+        current_mode = fallback_candidates.pop(0)
+        if current_mode in visited_modes:
+            current_mode = None
+            continue
+        log(f"Mode resolution: fallback chain exhausted for {requested_mode}, trying default {current_mode}")
 
     fallback = next(iter(sorted(available_modes)))
-    log(f"Mode resolution: r36 unavailable, using first available mode: {fallback}")
+    log(f"Mode resolution: no configured default available for {requested_mode}; using first available mode: {fallback}")
     return fallback
 
 
@@ -3857,7 +4123,11 @@ def log_schedule_gate_report(gate: dict):
 
 def select_mode_profile(runtime_state):
     requested_mode = get_scheduled_mode_name(runtime_state)
-    resolved_mode = resolve_mode_name(requested_mode, runtime_state.available_modes)
+    resolved_mode = resolve_mode_name(
+        requested_mode,
+        runtime_state.available_modes,
+        default_fallback_mode=get_effective_schedule_fallback_mode(TRANSMIT_SCHEDULE_PROFILE),
+    )
     return requested_mode, MODE_PROFILES[resolved_mode]
 
 
@@ -4529,6 +4799,7 @@ def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float
         stage_title,
         [
             ("audio", audio_path),
+            ("radio", ACTIVE_RADIO_BAND.upper()),
             *describe_radio_control_states(),
             ("ptt_pins", ptt_pins),
             ("playback", ALSA_AUDIO_DEVICE or "auto-select"),
@@ -4677,8 +4948,12 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
     inspected.  Exits with code 0 on full success, 1 on any stage failure.
     """
     test_id = datetime.now(timezone.utc).strftime("TEST-%Y%m%d-%H%M%S")
-    output_dir = args.output_dir
-    resolved_mode = resolve_mode_name(mode_name, runtime_state.available_modes)
+    output_dir = TIMESTAMPED_DIR or args.output_dir or BASE_DIR
+    resolved_mode = resolve_mode_name(
+        mode_name,
+        runtime_state.available_modes,
+        default_fallback_mode=get_effective_schedule_fallback_mode(),
+    )
     wav_path = os.path.join(output_dir, f"{test_id}-{resolved_mode}.wav")
 
     # Resolve the image source before printing the header so the logged path is accurate.
@@ -4749,7 +5024,15 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
 
     # --- Stage 3: Radio TX ---
     if args.no_tx:
-        log_stage_header("Stage 3/3  Radio TX", [("status", "skipped (--no-tx)")])
+        log_stage_header(
+            "Stage 3/3  Radio TX",
+            [
+                ("status", "skipped (--no-tx)"),
+                ("radio", ACTIVE_RADIO_BAND.upper()),
+                ("radio_sel", describe_radio_selection()),
+                ("ptt_pins", get_active_ptt_pins()),
+            ],
+        )
         log_stage_footer("SKIPPED", [("reason", "operator requested encode-only test")])
         log_stage_footer("PASS", [("pipeline", "encode-only")])
         return
@@ -4784,6 +5067,7 @@ def print_runtime_startup_summary(args):
         [
             ("run_mode", _describe_run_mode(args)),
             ("config", args.config or "none (defaults + CLI/env)"),
+            ("schedule", f"{TRANSMIT_SCHEDULE_PROFILE}  fallback={describe_schedule_fallback_policy(TRANSMIT_SCHEDULE_PROFILE)}"),
             ("output_dir", TIMESTAMPED_DIR),
             ("slowframe", SLOWFRAME_BIN),
             ("test_image", args.test_image or TEST_IMAGE),
@@ -4809,6 +5093,7 @@ def print_mission_summary(runtime_state):
         "Mission Summary",
         [
             ("schedule", TRANSMIT_SCHEDULE_PROFILE),
+            ("fallback", describe_schedule_fallback_policy(TRANSMIT_SCHEDULE_PROFILE)),
             ("mmsstv", mmsstv_status),
             ("capture", f"interval={PIC_INTERVAL}s  total={PIC_TOTAL}  min_between_tx={MIN_CAPTURES_BETWEEN_TRANSMISSIONS}"),
             ("duty_target", f"{MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%"),
@@ -4828,7 +5113,11 @@ def print_mission_summary(runtime_state):
         if mode_name in seen:
             continue
         seen.add(mode_name)
-        resolved = resolve_mode_name(mode_name, runtime_state.available_modes)
+        resolved = resolve_mode_name(
+            mode_name,
+            runtime_state.available_modes,
+            default_fallback_mode=get_effective_schedule_fallback_mode(TRANSMIT_SCHEDULE_PROFILE),
+        )
         profile = MODE_PROFILES[resolved]
         ratio = _duty_cooldown_ratio()
         if TX_COOLDOWN_METHOD == "fixed":
@@ -4905,13 +5194,21 @@ def main():
         list_modes()
         return
     if args.list_schedules:
+        config_path = args.config
+        if config_path is None and os.path.isfile(DEFAULT_CONFIG_PATH):
+            config_path = DEFAULT_CONFIG_PATH
+        if config_path:
+            load_config(config_path)
         list_schedules()
         return
     if args.explain:
         print_explain(args.explain)
         return
     if args.generate_config is not None:
-        generate_default_config(args.generate_config)
+        output_path = args.generate_config
+        if output_path == GENERATE_CONFIG_USE_CONFIG_PATH:
+            output_path = args.config or DEFAULT_CONFIG_PATH
+        generate_default_config(output_path)
         return
 
     selected_log_file = args.quiet_log_file or args.log_file
@@ -4949,8 +5246,15 @@ def main():
     if args.pd_idle is not None:
         PD_IDLE_MODE = args.pd_idle
     if args.schedule is not None:
-        TRANSMIT_SCHEDULE_PROFILE = args.schedule
-        TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(args.schedule, TRANSMIT_SCHEDULE_PROFILES["hab_cruise"])
+        schedule_name = _normalize_schedule_profile_name(args.schedule)
+        if schedule_name not in TRANSMIT_SCHEDULE_PROFILES:
+            print(
+                f"ERROR: unknown schedule preset '{args.schedule}'. Valid: {', '.join(sorted(TRANSMIT_SCHEDULE_PROFILES))}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        TRANSMIT_SCHEDULE_PROFILE = schedule_name
+        TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES[schedule_name]
     else:
         TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE_PROFILES["hab_cruise"])
     if args.total is not None:
