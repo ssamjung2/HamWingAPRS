@@ -199,8 +199,8 @@ RadioConfig VHF_CONFIG = {
 };
 
 RadioConfig UHF_CONFIG = {
-  434.5000,   // TX freq
-  434.5000,   // RX freq
+  432.4000,   // TX freq
+  432.4000,   // RX freq
   4,          // squelch
   6,          // volume
   0,          // CTCSS TX

@@ -291,6 +291,60 @@ After Feather startup and Pi GPIO init, test the full stack:
 
 ---
 
+## Operator Workflow Quick Commands (pi_sstv.py)
+
+After hardware setup is complete, use these commands for day-to-day operation.
+
+### 1) Mission Run (normal operation)
+
+```bash
+python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg
+```
+
+### 2) Single Test Run (safe default: no RF TX)
+
+```bash
+# Encode-only by default (no radio transmit)
+python3 pi_sstv.py test r36
+
+# Explicitly allow RF TX for test mode
+python3 pi_sstv.py test r36 --tx
+```
+
+### 3) Panel/Card Workflow (safe default: no RF TX)
+
+```bash
+# Use a folder of test images, encode-only by default
+python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels
+
+# Explicitly allow RF TX for panel workflow
+python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels --tx
+```
+
+### 4) Hardware Diagnostics
+
+```bash
+# PTT GPIO key test (seconds)
+python3 pi_sstv.py diag ptt 0.5
+
+# Status LED test (seconds per state)
+python3 pi_sstv.py diag led 1.5
+
+# GPS NMEA/fix diagnostic stream (seconds)
+python3 pi_sstv.py diag gps 30
+
+# ALSA mixer/volume guardrail check
+python3 pi_sstv.py diag alsa
+```
+
+### Notes
+
+- The verb interface is recommended: `mission`, `test`, `panels`, `diag`, `info`, `config`.
+- Legacy flags are still supported (for example: `--test`, `--test-panels`, `--ptt-test`).
+- For compliance, keep callsign overlay enabled when transmitting SSTV.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause | Solution |

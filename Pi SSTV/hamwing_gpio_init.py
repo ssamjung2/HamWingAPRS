@@ -1,72 +1,44 @@
 #!/usr/bin/env python3
 """
-hamwing_gpio_init.py — HamWing GPIO safe-state initializer for Raspberry Pi
+hamwing_gpio_init.py  —  HamWing GPIO safe-state initializer
+Run once at boot (before pi_sstv.py or any other script) via systemd.
 
-Usage:
-  python3 hamwing_gpio_init.py
-  
-This script enforces safe GPIO states on the Pi after Feather M0 startup:
-  1. Ensures PTT is HIGH (transmitter unkeyed, active-LOW logic)
-  2. Ensures PD is HIGH (radios active, released from Feather control)
-  3. Sets H/L to LOW (0.5W low power by default)
-  4. Sets pins to OUTPUT mode so Pi has exclusive ownership
-  
-This prevents Pi UART GPIO from conflicting with Feather's UHF UART initialization.
-Install as a systemd service to run automatically at boot.
+Sets the shared DRA818 control lines to their safe idle states immediately,
+so the Pi never holds PTT keyed or PD low during the boot window.
+
+Safe idle state:
+  PD  (GPIO4,  pin 7)  = OUTPUT HIGH  — radios active (Feather M0 also drives this HIGH)
+  PTT (GPIO27, pin 13) = OUTPUT HIGH  — transmitter unkeyed (active-LOW, HIGH = idle)
+  HL  (GPIO22, pin 15) = OUTPUT LOW   — low power (0.5 W) until pi_sstv.py decides otherwise
 """
 
 import RPi.GPIO as GPIO
 import sys
-import time
 
-# BCM pin numbers — must match HamWing_RadioConfig.ino
-PTT_PIN = 27   # Active-LOW PTT control (HIGH=idle, LOW=transmit)
-PD_PIN = 4     # Power-down control (HIGH=active, LOW=sleep)
-HL_PIN = 22    # Power level (HIGH=1W, LOW=0.5W)
-
-def safe_cleanup():
-    """Ensure GPIO is reset on exit."""
-    GPIO.cleanup()
+# BCM pin numbers — must match pi_sstv.py
+DRA818_PTT_PIN        = 27
+DRA818_POWER_DOWN_PIN =  4
+DRA818_POWER_LEVEL_PIN = 22
 
 def main():
-    try:
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
 
-        print("HamWing GPIO Initialization")
-        print(f"  PTT pin (GPIO{PTT_PIN}): OUTPUT HIGH (idle)")
-        print(f"  PD pin (GPIO{PD_PIN}):   OUTPUT HIGH (active)")
-        print(f"  H/L pin (GPIO{HL_PIN}):  OUTPUT LOW (0.5W)")
-        print()
+    # PTT: OUTPUT HIGH = transmitter unkeyed (active-LOW PTT)
+    GPIO.setup(DRA818_PTT_PIN,         GPIO.OUT, initial=GPIO.HIGH)
 
-        # PTT: HIGH = idle (active-LOW keying)
-        GPIO.setup(PTT_PIN, GPIO.OUT, initial=GPIO.HIGH)
-        print(f"✓ GPIO{PTT_PIN} (PTT) set to OUTPUT HIGH (transmitter unkeyed)")
+    # PD: OUTPUT HIGH = radios active.
+    # The Feather M0 also drives this line HIGH.  Both drivers agree on HIGH,
+    # so there is no contention.  The Pi switches to INPUT (releasing the line
+    # back to the Feather) in pi_sstv.py after each TX window.
+    GPIO.setup(DRA818_POWER_DOWN_PIN,  GPIO.OUT, initial=GPIO.HIGH)
 
-        # PD: HIGH = radios active
-        GPIO.setup(PD_PIN, GPIO.OUT, initial=GPIO.HIGH)
-        print(f"✓ GPIO{PD_PIN} (PD) set to OUTPUT HIGH (radios active)")
+    # HL: OUTPUT LOW = 0.5 W low power until pi_sstv.py changes it for TX.
+    GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW)
 
-        # H/L: LOW = 0.5W low power
-        GPIO.setup(HL_PIN, GPIO.OUT, initial=GPIO.LOW)
-        print(f"✓ GPIO{HL_PIN} (H/L) set to OUTPUT LOW (0.5W low power)")
-
-        print()
-        print("✓ HamWing GPIO safe-state applied successfully")
-        print()
-        print("Next steps:")
-        print("  1. Ensure Feather M0 has completed radio configuration (check Serial output)")
-        print("  2. Your application can now control GPIO27 (PTT) and GPIO4 (PD)")
-        print("  3. To transmit: GPIO27 LOW, to idle: GPIO27 HIGH")
-        print()
-
-        # Keep GPIO state active after script exits
-        # (pin configuration persists in hardware)
-
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        safe_cleanup()
-        sys.exit(1)
+    print("HamWing GPIO safe-state applied: PTT=HIGH(idle), PD=HIGH(active), HL=LOW(low-power)")
+    # GPIO state persists after this script exits — the kernel keeps the pin
+    # configuration until another process changes it or the system reboots.
 
 if __name__ == "__main__":
     main()

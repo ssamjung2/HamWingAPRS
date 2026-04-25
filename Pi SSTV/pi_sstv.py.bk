@@ -1251,13 +1251,13 @@ def generate_default_config(path: str):
 # to override it.  Command-line flags always take precedence over this file.
 #
 # Generate a fresh copy of this file at any time:
-#   python3 pi_sstv.py config generate
+#   python3 pi_sstv.py --generate-config [PATH]
 #
 # Load this file at runtime:
 #   python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg
 #
 # For detailed documentation on any section, run:
-#   python3 pi_sstv.py info explain <topic>
+#   python3 pi_sstv.py --explain <topic>
 #   Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging  env
 # =============================================================================
 
@@ -1266,7 +1266,7 @@ def generate_default_config(path: str):
 # [paths]  File and binary path overrides
 # -----------------------------------------------------------------------------
 # Use this section to relocate output files or point to alternate binaries.
-# For info/explain reference: python3 pi_sstv.py info explain encode
+# For --explain reference: python3 pi_sstv.py --explain encode
 [paths]
 
 # Directory where captured images, WAV files, and the CSV log are written.
@@ -1286,7 +1286,7 @@ def generate_default_config(path: str):
 # [test_panels]  Dedicated image panel/card test workflow
 # -----------------------------------------------------------------------------
 # This feature is intentionally separate from mission capture fallback logic.
-# It is only used when you explicitly run panels.
+# It is only used when you explicitly run --test-panels.
 [test_panels]
 
 # File or folder containing test panel/card images.
@@ -1298,10 +1298,10 @@ source = {TEST_PANEL_SOURCE}
 # Selection policy when source is a folder: sequential or random
 selection = {TEST_PANEL_SELECTION}
 
-# Number of images to process/transmit per panels run.
+# Number of images to process/transmit per --test-panels run.
 count = {TEST_PANEL_COUNT}
 
-# Default SSTV mode when panels is invoked without a mode argument.
+# Default SSTV mode when --test-panels is invoked without a mode argument.
 mode = {TEST_PANEL_DEFAULT_MODE}
 
 # Overlay controls for test panel workflow.
@@ -1318,7 +1318,7 @@ allow_tx_without_callsign = {'true' if TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN else
 # -----------------------------------------------------------------------------
 # [mission]  Main capture-and-transmit loop
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain schedule
+# For --explain reference: python3 pi_sstv.py --explain schedule
 [mission]
 
 # Enable or disable the mission.  Set to false to prevent the service from
@@ -1390,7 +1390,7 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 # -----------------------------------------------------------------------------
 # [radio]  Radio band selection, duty-cycle, cooldown, and TX timing
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain tx
+# For --explain reference: python3 pi_sstv.py --explain tx
 [radio]
 
 # Active radio band for transmission.
@@ -1490,7 +1490,7 @@ error_cycle_seconds = {STATUS_LED_ERROR_CYCLE_SECONDS}
 # -----------------------------------------------------------------------------
 # [capture]  Camera and image acquisition  (OV5647 / rpicam-still)
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain capture
+# For --explain reference: python3 pi_sstv.py --explain capture
 [capture]
 
 # JPEG compression quality (1 – 100).  93 is visually lossless.
@@ -1521,7 +1521,7 @@ capture_file_timeout = {CAPTURE_FILE_TIMEOUT}
 # -----------------------------------------------------------------------------
 # [encode]  SlowFrame audio encoding
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain encode
+# For --explain reference: python3 pi_sstv.py --explain encode
 [encode]
 
 # Audio container format.
@@ -1551,7 +1551,7 @@ sstv_conversion_settle_seconds = {SSTV_CONVERSION_SETTLE_SECONDS}
 # [overlay]  Timestamp and callsign text overlays
 # -----------------------------------------------------------------------------
 # Overlays are baked into the image by SlowFrame at encode time.
-# For info/explain reference: python3 pi_sstv.py info explain overlay
+# For --explain reference: python3 pi_sstv.py --explain overlay
 #
 # Positions: top-left  top-right  bottom-left  bottom-right
 #            top  bottom  left  right  center
@@ -1586,7 +1586,7 @@ custom_text = {OVERLAY_TEXT_OVERRIDE}
 # -----------------------------------------------------------------------------
 # [mmsstv]  MMSSTV encoder library
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain mmsstv
+# For --explain reference: python3 pi_sstv.py --explain mmsstv
 [mmsstv]
 
 # Explicit path to the MMSSTV shared library.  Leave blank to let SlowFrame
@@ -1697,7 +1697,7 @@ units = {GPS_ALTITUDE_UNITS}
 # -----------------------------------------------------------------------------
 # [logging]  Log verbosity and output destination
 # -----------------------------------------------------------------------------
-# For info/explain reference: python3 pi_sstv.py info explain logging
+# For --explain reference: python3 pi_sstv.py --explain logging
 [logging]
 
 # Enable DEBUG-level output.  Prints full subprocess commands, GPIO state
@@ -1766,16 +1766,9 @@ def load_config(path: str):
     global ALSA_TARGET_VOLUME_PERCENT, ALSA_MAX_SAFE_VOLUME_PERCENT, ALSA_ENFORCE_VOLUME
     global APLAY_TIMEOUT_SECONDS, APLAY_TIMEOUT_MARGIN_SECONDS
 
-
-    # If not found at the given path, also check the script's local directory
     if not os.path.isfile(path):
-        script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-        local_cfg = os.path.join(script_dir, os.path.basename(path))
-        if os.path.isfile(local_cfg):
-            path = local_cfg
-        else:
-            print(f"Config file not found: {path}", file=sys.stderr)
-            sys.exit(1)
+        print(f"Config file not found: {path}", file=sys.stderr)
+        sys.exit(1)
 
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(path)
@@ -3873,7 +3866,7 @@ def print_help_topics():
     print(
         "HELP TOPICS\n"
         "===========\n"
-        "Use: python3 pi_sstv.py info explain <topic>\n"
+        "Use: python3 pi_sstv.py --explain <topic>\n"
     )
     for topic in HELP_TOPIC_ORDER:
         summary = HELP_TOPIC_SUMMARIES.get(topic, "")
@@ -3889,28 +3882,28 @@ def print_help_quick():
         "OPERATOR QUICK START\n"
         "====================\n"
         "1) Create config template\n"
-        f"   python3 pi_sstv.py config generate\n"
+        f"   python3 pi_sstv.py --generate-config\n"
         "\n"
         "2) Safe bench test (capture + encode, no RF TX)\n"
-        "   python3 pi_sstv.py test r36 --no-tx\n"
+        "   python3 pi_sstv.py --test r36 --no-tx\n"
         "\n"
         "3) Dedicated panel/card test workflow\n"
-        "   python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
+        "   python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
         "\n"
         "4) Start mission from config\n"
-        f"   python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
+        "   python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
         "\n"
         "5) Explore documentation by topic\n"
-        "   python3 pi_sstv.py info topics\n"
-        "   python3 pi_sstv.py info explain schedule\n"
+        "   python3 pi_sstv.py --help-topics\n"
+        "   python3 pi_sstv.py --explain schedule\n"
         "\n"
         "6) Inspect supported modes and schedules\n"
-        "   python3 pi_sstv.py info modes\n"
-        "   python3 pi_sstv.py info schedules\n"
+        "   python3 pi_sstv.py --list-modes\n"
+        "   python3 pi_sstv.py --list-schedules\n"
         "\n"
         "7) Run hardware diagnostics\n"
-        "   python3 pi_sstv.py diag led 1.5\n"
-        "   python3 pi_sstv.py diag gps 30\n"
+        "   python3 pi_sstv.py --led-test 1.5\n"
+        "   python3 pi_sstv.py --gps-test 30\n"
     )
 
 
@@ -3919,65 +3912,65 @@ def print_help_examples():
         "EXAMPLE COOKBOOK\n"
         "================\n"
         "Mission runs (config + presets)\n"
-        "  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
-        "  python3 pi_sstv.py mission --schedule rapid --callsign W1AW-11 --total 200 --interval 8\n"
-        "  python3 pi_sstv.py mission --schedule quality --mmsstv-lib /path/to/libsstv_encoder.so\n"
-        "  python3 pi_sstv.py mission --schedule native-balanced --callsign W1AW-11\n"
+        "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
+        "  python3 pi_sstv.py --schedule rapid --callsign W1AW-11 --total 200 --interval 8\n"
+        "  python3 pi_sstv.py --schedule quality --mmsstv-lib /path/to/libsstv_encoder.so\n"
+        "  python3 pi_sstv.py --schedule native-balanced --callsign W1AW-11\n"
         "\n"
         "Radio-aware mission examples\n"
         "  # VHF only (default):\n"
-        "  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg --radio vhf\n"
+        "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --radio vhf\n"
         "  # UHF only:\n"
-        "  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg --radio uhf\n"
+        "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --radio uhf\n"
         "  # Dual-band keying (both PTT lines):\n"
-        "  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg --radio both\n"
+        "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg --radio both\n"
         "\n"
         "Safety-first pipeline tests\n"
-        "  python3 pi_sstv.py test r36 --no-tx\n"
-        "  python3 pi_sstv.py test pd90 --no-tx\n"
-        "  python3 pi_sstv.py test m1 --test-image /home/pi-user/photo.jpg --no-tx\n"
-        "  python3 pi_sstv.py test r36 --callsign W1AW-11 --no-tx --debug\n"
+        "  python3 pi_sstv.py --test r36\n"
+        "  python3 pi_sstv.py --test pd90 --no-tx\n"
+        "  python3 pi_sstv.py --test m1 --test-image /home/pi-user/photo.jpg --no-tx\n"
+        "  python3 pi_sstv.py --test r36 --callsign W1AW-11 --no-tx --debug\n"
         "\n"
         "Dedicated panel/card tests (explicit feature, not fallback)\n"
-        "  python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
-        "  python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels --test-panel-count 3 --test-panel-selection random\n"
+        "  python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
+        "  python3 pi_sstv.py --test-panels --test-panel-source /home/pi-user/Desktop/pi_sstv/panels --test-panel-count 3 --test-panel-selection random\n"
         "  # Keep callsign overlay enabled when transmitting to stay Part 97 compliant.\n"
         "\n"
         "Radio / GPIO checks\n"
-        "  python3 pi_sstv.py diag ptt\n"
-        "  python3 pi_sstv.py diag ptt 0.5\n"
-        "  python3 pi_sstv.py diag ptt 1.0 --radio both\n"
-        "  python3 pi_sstv.py diag led\n"
-        "  python3 pi_sstv.py diag led 1.2\n"
+        "  python3 pi_sstv.py --ptt-test\n"
+        "  python3 pi_sstv.py --ptt-test 0.5\n"
+        "  python3 pi_sstv.py --ptt-test 1.0 --radio both\n"
+        "  python3 pi_sstv.py --led-test\n"
+        "  python3 pi_sstv.py --led-test 1.2\n"
         "\n"
         "ALSA and playback path validation\n"
-        "  python3 pi_sstv.py diag alsa\n"
-        "  python3 pi_sstv.py test r36 --alsa-playback-device plughw:Headphones,0 --no-tx\n"
+        "  python3 pi_sstv.py --alsa-volume-check\n"
+        "  python3 pi_sstv.py --alsa-playback-device plughw:Headphones,0 --test r36 --no-tx\n"
         "\n"
         "Duty-cycle / thermal tuning examples\n"
-        "  python3 pi_sstv.py mission --schedule standard --cooldown-scale 1.5 --duty-cycle 0.20\n"
-        "  python3 pi_sstv.py mission --schedule rapid --cooldown-scale 0.8 --min-captures 8\n"
+        "  python3 pi_sstv.py --schedule standard --cooldown-scale 1.5 --duty-cycle 0.20\n"
+        "  python3 pi_sstv.py --schedule rapid --cooldown-scale 0.8 --min-captures 8\n"
         "\n"
         "GPS overlay examples\n"
-        "  python3 pi_sstv.py test r36 --gps --gps-device /dev/serial0 --gps-baud 9600 --no-tx\n"
-        "  python3 pi_sstv.py mission --gps --gps-units ft --config /home/pi-user/pi_sstv.cfg\n"
+        "  python3 pi_sstv.py --gps --gps-device /dev/serial0 --gps-baud 9600 --test r36 --no-tx\n"
+        "  python3 pi_sstv.py --gps --gps-units ft --config /home/pi-user/pi_sstv.cfg\n"
         "\n"
         "GPS diagnostics\n"
-        "  python3 pi_sstv.py diag gps\n"
-        "  python3 pi_sstv.py diag gps 60 --gps-device /dev/serial0 --gps-baud 9600\n"
+        "  python3 pi_sstv.py --gps-test\n"
+        "  python3 pi_sstv.py --gps-test 60 --gps-device /dev/serial0 --gps-baud 9600\n"
         "\n"
         "Logging examples\n"
-        "  python3 pi_sstv.py mission --debug --log-file /home/pi-user/mission.log --config /home/pi-user/pi_sstv.cfg\n"
-        "  python3 pi_sstv.py mission --quiet-log-file /home/pi-user/mission.log --config /home/pi-user/pi_sstv.cfg\n"
+        "  python3 pi_sstv.py --debug --log-file /home/pi-user/mission.log --config /home/pi-user/pi_sstv.cfg\n"
+        "  python3 pi_sstv.py --quiet-log-file /home/pi-user/mission.log --config /home/pi-user/pi_sstv.cfg\n"
         "\n"
         "Documentation\n"
-        "  python3 pi_sstv.py info topics\n"
-        "  python3 pi_sstv.py info flight\n"
-        "  python3 pi_sstv.py info explain capture\n"
-        "  python3 pi_sstv.py info explain mmsstv\n"
-        "  python3 pi_sstv.py info explain schedule\n"
-        "  python3 pi_sstv.py info explain tx\n"
-        "  python3 pi_sstv.py info explain env\n"
+        "  python3 pi_sstv.py --help-topics\n"
+        "  python3 pi_sstv.py --help-flight\n"
+        "  python3 pi_sstv.py --explain capture\n"
+        "  python3 pi_sstv.py --explain mmsstv\n"
+        "  python3 pi_sstv.py --explain schedule\n"
+        "  python3 pi_sstv.py --explain tx\n"
+        "  python3 pi_sstv.py --explain env\n"
     )
 
 
@@ -4000,30 +3993,30 @@ def print_help_flight():
         "\n"
         "C) Safety-first bench validation (no RF TX)\n"
         "  [ ] Run encode-only test:\n"
-        "      python3 pi_sstv.py test r36 --no-tx\n"
+        "      python3 pi_sstv.py --test r36 --no-tx\n"
         "  [ ] Inspect image + WAV artifacts in output directory\n"
         "  [ ] Verify overlay text (callsign/timestamp/GPS) is readable\n"
         "\n"
         "D) Radio control validation\n"
         "  [ ] Run GPIO key test:\n"
-        "      python3 pi_sstv.py diag ptt 0.5\n"
+        "      python3 pi_sstv.py --ptt-test 0.5\n"
         "  [ ] Run status LED pattern test:\n"
-        "      python3 pi_sstv.py diag led 1.5\n"
+        "      python3 pi_sstv.py --led-test 1.5\n"
         "  [ ] Confirm expected key/unkey behavior on radio hardware\n"
         "\n"
         "E) Audio path validation\n"
         "  [ ] Run ALSA guardrail/mixer check:\n"
-        "      python3 pi_sstv.py diag alsa\n"
+        "      python3 pi_sstv.py --alsa-volume-check\n"
         "  [ ] Confirm mixer target is sane (typically <= 85%)\n"
         "\n"
         "F) GPS receiver validation (if GPS is installed)\n"
         "  [ ] Run NMEA/fix diagnostics:\n"
-        "      python3 pi_sstv.py diag gps 30 --gps-device /dev/serial0 --gps-baud 9600\n"
+        "      python3 pi_sstv.py --gps-test 30 --gps-device /dev/serial0 --gps-baud 9600\n"
         "  [ ] Confirm at least one valid fix appears before launch\n"
         "\n"
         "G) MMSSTV capability (optional but recommended)\n"
         "  [ ] If using PD/Robot modes, validate library detection:\n"
-        "      python3 pi_sstv.py info modes\n"
+        "      python3 pi_sstv.py --list-modes\n"
         "  [ ] If needed, set library path with --mmsstv-lib or MMSSTV_LIB_PATH\n"
         "\n"
         "H) Mission profile review\n"
@@ -4034,14 +4027,14 @@ def print_help_flight():
         "\n"
         "I) Ready-to-launch commands\n"
         "  1) Generate/update config template:\n"
-        "     python3 pi_sstv.py config generate\n"
+        "     python3 pi_sstv.py --generate-config\n"
         "  2) Final mission start from config:\n"
-        "     python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
+        "     python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
         "\n"
         "Related guides:\n"
-        "  python3 pi_sstv.py info quick\n"
-        "  python3 pi_sstv.py info examples\n"
-        "  python3 pi_sstv.py info topics\n"
+        "  python3 pi_sstv.py --help-quick\n"
+        "  python3 pi_sstv.py --help-examples\n"
+        "  python3 pi_sstv.py --help-topics\n"
     )
 
 
@@ -4050,37 +4043,70 @@ def print_help_cli_overview():
         "pi_sstv.py - HamWing SSTV HAB payload controller\n"
         "=================================================\n"
         "\n"
-        "**VERB-BASED INTERFACE (recommended)**\n"
-        "  All workflows now use verbs as the primary interface.\n"
-        "  Example:  python3 pi_sstv.py test r36 --no-tx\n"
+        "Use this short help for day-to-day operations.\n"
+        "For the complete argparse flag reference:  python3 pi_sstv.py --help-all\n"
         "\n"
-        "Verbs and common usage:\n"
-        "  mission      Main capture-and-transmit loop\n"
+        "Verb workflows (recommended)\n"
+        "  Note: test/panels default to encode-only (no RF TX). Add --tx to transmit.\n"
+        "  Mission\n"
         "    python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
-        "  test         Single-shot pipeline test\n"
+        "  Single test\n"
         "    python3 pi_sstv.py test r36 --no-tx\n"
         "    python3 pi_sstv.py test r36 --tx\n"
-        "  panels       Dedicated test panel/card workflow\n"
+        "  Panel/card test\n"
         "    python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
         "    python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels --tx\n"
-        "  diag         Diagnostics: ptt, led, gps, alsa\n"
+        "  Diagnostics\n"
         "    python3 pi_sstv.py diag ptt 0.5\n"
         "    python3 pi_sstv.py diag led 1.5\n"
         "    python3 pi_sstv.py diag gps 30\n"
         "    python3 pi_sstv.py diag alsa\n"
-        "  info         Info, help, topics, explain\n"
+        "  Information\n"
         "    python3 pi_sstv.py info modes\n"
         "    python3 pi_sstv.py info schedules\n"
         "    python3 pi_sstv.py info explain schedule\n"
-        "  config       Generate or manage config files\n"
+        "  Config generation\n"
         "    python3 pi_sstv.py config generate /home/pi-user/pi_sstv.cfg\n"
         "\n"
-        "Aliases:\n"
-        "  bench      -> test <mode> --no-tx\n"
-        "  preflight  -> info flight\n"
+        "Core workflows\n"
+        "  Mission run\n"
+        "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
+        "  Bench test (no RF TX)\n"
+        "    python3 pi_sstv.py --test r36 --no-tx\n"
+        "  Panel/card test workflow\n"
+        "    python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
+        "  GPIO key test\n"
+        "    python3 pi_sstv.py --ptt-test 0.5\n"
+        "  Status LED test\n"
+        "    python3 pi_sstv.py --led-test 1.5\n"
+        "  GPS diagnostics\n"
+        "    python3 pi_sstv.py --gps-test 30\n"
+        "  ALSA validation\n"
+        "    python3 pi_sstv.py --alsa-volume-check\n"
         "\n"
-        "For full flag reference, run:  python3 pi_sstv.py <verb> help\n"
-        "For legacy flag compatibility, see --help-all (deprecated).\n"
+        "Most-used options\n"
+        "  Mission: --config, --schedule, --total, --interval, --callsign\n"
+        "  Safety : --no-tx, --tx-power, --pd-idle, --cooldown-method, --fixed-cooldown-seconds, --cooldown-scale, --duty-cycle, --min-captures\n"
+        "  Encode : --test, --format, --sample-rate, --aspect\n"
+        "  Panels : --test-panels, --test-panel-source, --test-panel-count, --test-panel-selection\n"
+        "  Audio  : --alsa-playback-device, --alsa-mixer-control\n"
+        "  GPS    : --gps, --gps-test, --gps-device, --gps-baud, --gps-units\n"
+        "  Diag   : --ptt-test, --led-test, --alsa-volume-check\n"
+        "\n"
+        "Guided help\n"
+        "  python3 pi_sstv.py --help-quick\n"
+        "  python3 pi_sstv.py --help-flight\n"
+        "  python3 pi_sstv.py --help-examples\n"
+        "  python3 pi_sstv.py --help-topics\n"
+        "  python3 pi_sstv.py --explain <topic>\n"
+        "\n"
+        "Reference lists\n"
+        "  python3 pi_sstv.py --list-modes\n"
+        "  python3 pi_sstv.py --list-schedules\n"
+        "\n"
+        "Aliases\n"
+        "  python3 pi_sstv.py bench r36\n"
+        "  python3 pi_sstv.py preflight\n"
     )
 
 
@@ -4092,69 +4118,69 @@ def print_explain(topic: str):
         print(f"Unknown topic: '{topic}'")
         print(f"Available topics: {', '.join(valid)}")
         print("Tip: run 'python3 pi_sstv.py --help-topics' for a structured topic index.")
-        print(
-            "OPERATOR QUICK START\n"
-            "====================\n"
-            "1) Create config template\n"
-            f"   python3 pi_sstv.py config generate\n"
-            "\n"
-            "2) Safe bench test (capture + encode, no RF TX)\n"
-            "   python3 pi_sstv.py test r36 --no-tx\n"
-            "\n"
-            "3) Dedicated panel/card test workflow\n"
-            "   python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
-            "\n"
-            "4) Start mission from config\n"
-            "   python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
-            "\n"
-            "5) Explore documentation by topic\n"
-            "   python3 pi_sstv.py info topics\n"
-            "   python3 pi_sstv.py info explain schedule\n"
-            "\n"
-            "6) Inspect supported modes and schedules\n"
-            "   python3 pi_sstv.py info modes\n"
-            "   python3 pi_sstv.py info schedules\n"
-            "\n"
-            "7) Run hardware diagnostics\n"
-            "   python3 pi_sstv.py diag led 1.5\n"
-            "   python3 pi_sstv.py diag gps 30\n"
-        )
+        sys.exit(1)
+    # Substitute live script constants into topics that reference them.
+    text = text.format(
+        metering=RPICAM_METERING,
+        exposure=RPICAM_EXPOSURE,
+        awb=RPICAM_AWB,
+        quality=RPICAM_QUALITY,
+        min_captures=MIN_CAPTURES_BETWEEN_TRANSMISSIONS,
+        cooldown_scale=COOLDOWN_SCALE_FACTOR,
+        duty_pct=int(MAX_TRANSMIT_DUTY_CYCLE * 100),
+        duty_pct_raw=MAX_TRANSMIT_DUTY_CYCLE,
+        ptt=DRA818_PTT_PIN,
+        pd=DRA818_POWER_DOWN_PIN,
+        hl=DRA818_POWER_LEVEL_PIN,
+        al=AUDIO_LEFT_PWM_PIN,
+        ar=AUDIO_RIGHT_PWM_PIN,
+        wake=RADIO_WAKE_DELAY_SECONDS,
+        ptt_delay=PTT_KEY_DELAY_SECONDS,
+        post=POST_PLAYBACK_DELAY_SECONDS,
+    )
+    header = _render_structured_explain_header(canonical)
+    if header:
+        print(header + text)
+    else:
+        print(text)
+
+
 def parse_args_legacy(argv: Optional[List[str]] = None):
     description = (
         "pi_sstv.py - HamWing SSTV HAB payload controller\n\n"
         "Pipeline: capture (rpicam-still) -> encode (SlowFrame) -> transmit (aplay + GPIO)\n\n"
         "Verb interface (recommended): mission | test | panels | diag | info | config\n"
         "Examples: 'python3 pi_sstv.py test r36 --no-tx', 'python3 pi_sstv.py diag led 1.5'\n\n"
-        "Primary workflows (verb-based):\n"
-        "  Mission run    : mission --config PATH\n"
-        "  Single test    : test MODE [--no-tx]\n"
-        "  Panel test     : panels MODE [--no-tx]\n"
-        "  GPIO key test  : diag ptt [SECONDS]\n"
-        "  LED test       : diag led [SECONDS]\n"
-        "  GPS diagnostics: diag gps [SECONDS]\n"
-        "  ALSA check     : diag alsa\n\n"
+        "Primary workflows:\n"
+        "  Mission run    : --config PATH   (or mission flags)\n"
+        "  Single test    : --test MODE [--no-tx]\n"
+        "  Panel test     : --test-panels [MODE] [--no-tx]\n"
+        "  GPIO key test  : --ptt-test [SECONDS]\n"
+        "  LED test       : --led-test [SECONDS]\n"
+        "  GPS diagnostics: --gps-test [SECONDS]\n"
+        "  ALSA check     : --alsa-volume-check\n\n"
         "Guided help:\n"
-        "  info quick      Operator-first startup guide\n"
-        "  info flight     Preflight checklist before enabling TX\n"
-        "  info examples   Scenario-based command cookbook\n"
-        "  info topics     List all explain topics with summaries\n"
-        "  info explain TOPIC   Deep reference for one subsystem"
+        "  --help-quick      Operator-first startup guide\n"
+        "  --help-flight     Preflight checklist before enabling TX\n"
+        "  --help-examples   Scenario-based command cookbook\n"
+        "  --help-topics     List all --explain topics with summaries\n"
+        "  --explain TOPIC   Deep reference for one subsystem"
     )
     epilog = (
         "Common entry points:\n"
-        "  python3 pi_sstv.py config generate\n"
-        "  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
-        "  python3 pi_sstv.py test r36 --no-tx\n"
-        "  python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
-        "  python3 pi_sstv.py diag led 1.5\n"
-        "  python3 pi_sstv.py diag gps 30\n"
-        "  python3 pi_sstv.py info modes\n"
-        "  python3 pi_sstv.py info schedules\n\n"
+        "  python3 pi_sstv.py --generate-config\n"
+        "  python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
+        "  python3 pi_sstv.py --test r36 --no-tx\n"
+        "  python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
+        "  python3 pi_sstv.py --led-test 1.5\n"
+        "  python3 pi_sstv.py --gps-test 30\n"
+        "  python3 pi_sstv.py --list-modes\n"
+        "  python3 pi_sstv.py --list-schedules\n\n"
         "For guided navigation:\n"
-        "  python3 pi_sstv.py info quick\n"
-        "  python3 pi_sstv.py info flight\n"
-        "  python3 pi_sstv.py info examples\n"
-        "  python3 pi_sstv.py info topics\n"
+        "  python3 pi_sstv.py --help-quick\n"
+        "  python3 pi_sstv.py --help-flight\n"
+        "  python3 pi_sstv.py --help-examples\n"
+        "  python3 pi_sstv.py --help-topics\n"
     )
 
     parser = argparse.ArgumentParser(
@@ -4167,7 +4193,134 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
     # --- Pipeline mode flags ---
     mode_group = parser.add_argument_group(
         "OPERATOR WORKFLOWS",
-        "Choose one info, test, or diagnostic workflow; omit all for a normal mission run."
+        "Choose one info, test, or diagnostic workflow; omit all for a normal mission run.",
+    )
+    mode_group.add_argument(
+        "--explain",
+        metavar="TOPIC",
+        default=None,
+        help=(
+            "Print structured operator guidance plus detailed reference for a pipeline topic and exit. "
+            "Topics: capture, encode, overlay, mmsstv, modes, schedule, tx, gpio, logging, env. "
+            "Aliases are accepted (e.g. camera, radio, lib, wiring). "
+            "Example: python3 pi_sstv.py --explain mmsstv"
+        ),
+    )
+    mode_group.add_argument(
+        "--help-topics",
+        action="store_true",
+        help="List all --explain topics with one-line summaries, then exit.",
+    )
+    mode_group.add_argument(
+        "--help-quick",
+        action="store_true",
+        help="Print a short operator startup guide (config -> bench test -> mission), then exit.",
+    )
+    mode_group.add_argument(
+        "--help-flight",
+        action="store_true",
+        help="Print a full preflight checklist for camera/SlowFrame/ALSA/GPIO/mission settings, then exit.",
+    )
+    mode_group.add_argument(
+        "--help-examples",
+        action="store_true",
+        help="Print scenario-based command examples for mission, test, GPIO, ALSA, and docs, then exit.",
+    )
+    mode_group.add_argument(
+        "--help-all",
+        action="store_true",
+        help="Show full argparse option reference (long form) and exit.",
+    )
+    mode_group.add_argument(
+        "--test",
+        metavar="MODE",
+        default=None,
+        help=(
+            "Run a single-shot pipeline test for MODE (e.g. r36, pd90, m1). "
+            "Captures one image, encodes it to SSTV audio, and optionally transmits. "
+            "Output files use a consistent TEST-YYYYMMDD-HHMMSS prefix so every "
+            "stage of the pipeline (capture, WAV) can be individually validated. "
+            "Combine with --no-tx to skip radio transmit. "
+            "Use --test-image to supply an existing image instead of calling the camera."
+        ),
+    )
+    mode_group.add_argument(
+        "--test-panels",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="MODE",
+        help=(
+            "Run the dedicated test panel/card workflow using [test_panels] source images. "
+            "When MODE is omitted, [test_panels] mode is used. "
+            "This workflow is explicit and never used as mission fallback."
+        ),
+    )
+    mode_group.add_argument(
+        "--test-panel-source",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Override [test_panels] source for this run. PATH may be a single image file or a folder."
+        ),
+    )
+    mode_group.add_argument(
+        "--test-panel-count",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Override [test_panels] count for this run.",
+    )
+    mode_group.add_argument(
+        "--test-panel-selection",
+        metavar="POLICY",
+        choices=["sequential", "random"],
+        default=None,
+        help="Override [test_panels] selection policy for this run.",
+    )
+    mode_group.add_argument(
+        "--list-modes",
+        action="store_true",
+        help="Print all known SSTV mode profiles with duration, cooldown, and MMSSTV requirements, then exit.",
+    )
+    mode_group.add_argument(
+        "--list-schedules",
+        action="store_true",
+        help="Print all schedule presets and their mode sequences, then exit.",
+    )
+    mode_group.add_argument(
+        "--ptt-test",
+        nargs="?",
+        const=1.0,
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Run a brief GPIO-only PTT keying test and exit. "
+            "If SECONDS is omitted, keys PTT for 1.0s. "
+            "This verifies PD/PTT control transitions without requiring SlowFrame encoding."
+        ),
+    )
+    mode_group.add_argument(
+        "--alsa-volume-check",
+        action="store_true",
+        help=(
+            "Run ALSA mixer validation only (no capture/encode/TX). "
+            "Verifies amixer control listing, set, and readback with PASS/FAIL output."
+        ),
+    )
+    mode_group.add_argument(
+        "--led-test",
+        nargs="?",
+        const=2.0,
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Run a standalone status LED pattern test and exit. "
+            "If SECONDS is omitted, each state is shown for 2.0s. "
+            "By default the test asks for interactive visual confirmation."
+        ),
     )
     mode_group.add_argument(
         "--led-test-no-confirm",
@@ -4698,186 +4851,59 @@ def _build_verb_parser() -> argparse.ArgumentParser:
     This parser only translates operator-friendly verbs into the long-standing
     legacy flag surface. All deep validation remains in parse_args_legacy().
     """
-    parser = argparse.ArgumentParser(
-        prog="pi_sstv.py",
-        description="HamWing SSTV Mission Controller — Verb-based CLI. Use a verb as the first argument.",
-        epilog="""
-Example verbs:
-  mission      Main capture-and-transmit loop
-  test         Single-shot pipeline test (e.g. test r36)
-  panels       Dedicated test panel/card workflow
-  diag         Diagnostics: ptt, led, gps, alsa
-  info         Info, help, topics, explain
-  config       Generate or manage config files
-Run 'python3 pi_sstv.py <verb> --help' for details on each verb.
-        """,
-        add_help=True
-    )
+    parser = argparse.ArgumentParser(add_help=False, prog="pi_sstv.py")
     subparsers = parser.add_subparsers(dest="verb")
 
+    mission = subparsers.add_parser("mission", add_help=False)
+    mission.add_argument("--tx", action="store_true")
+    mission.add_argument("--no-tx", action="store_true")
 
+    test = subparsers.add_parser("test", add_help=False)
+    test.add_argument("mode", nargs="?")
+    test.add_argument("--mode", dest="mode_opt", default=None)
+    test.add_argument("--tx", action="store_true")
+    test.add_argument("--no-tx", action="store_true")
 
-    mission = subparsers.add_parser("mission", add_help=True)
-    # All options are flags, no subverbs except help
-    mission.add_argument("--config", type=str, help="Path to config file")
-    mission.add_argument("--schedule", type=str, help="Schedule profile to use")
-    mission.add_argument("--tx", action="store_true", help="Enable radio transmission (default: enabled in mission mode)")
-    mission.add_argument("--no-tx", action="store_true", help="Disable radio transmission (encode only)")
-    mission.add_argument("--debug", action="store_true", help="Enable debug logging")
-    mission.add_argument("--log-file", type=str, help="Log file path")
-    mission.add_argument("--quiet-log-file", type=str, help="Log file path (suppress stdout)")
-    mission.add_argument("--radio", type=str, choices=["vhf", "uhf", "both"], help="Radio band to use")
-    mission.add_argument("--tx-power", type=str, choices=["low", "high"], help="TX power level")
-    mission.add_argument("--pd-idle", type=str, choices=["release", "sleep"], help="Panel idle mode")
-    mission.add_argument("--total", type=int, help="Total number of captures")
-    mission.add_argument("--interval", type=float, help="Interval between captures (seconds)")
-    mission.add_argument("--callsign", type=str, help="Override station callsign")
-    mission.add_argument("--overlay-text", type=str, help="Overlay text override")
-    mission.add_argument("--no-overlay", action="store_true", help="Disable overlay text")
-    mission.add_argument("--cooldown-method", type=str, help="Cooldown logic selector")
-    mission.add_argument("--fixed-cooldown-seconds", type=float, help="Static cooldown in seconds for fixed method")
-    mission.add_argument("--cooldown-scale", type=float, help="Multiply calculated cooldown duration by this factor")
-    mission.add_argument("--duty-cycle", type=float, help="Target transmit duty-cycle fraction (0.0–1.0)")
-    mission.add_argument("--min-captures", type=int, help="Minimum number of capture cycles between transmissions")
-    mission.add_argument("--estimated-flight-minutes", type=float, help="Estimated mission duration in minutes for thermal altitude correction")
-    mission.add_argument("--estimated-freefall-minutes", type=float, help="Final descent/freefall minutes for estimated cooldown model")
-    mission.add_argument("--format", type=str, choices=["wav", "aiff", "ogg"], help="Audio container format passed to SlowFrame")
-    mission.add_argument("--sample-rate", type=int, help="Audio sample rate in Hz")
-    mission.add_argument("--aspect", type=str, choices=["center", "pad", "stretch"], help="Image aspect-ratio handling")
-    mission.add_argument("--output-dir", type=str, help="Directory for captured images, WAV files, and CSV logs")
-    mission.add_argument("--slowframe", type=str, help="Path to the slowframe binary")
-    mission.add_argument("--test-image", type=str, help="Image path for use with --test")
-    mission.add_argument("--no-mmsstv", action="store_true", help="Disable MMSSTV library support")
-    mission.add_argument("--mmsstv-lib", type=str, help="Explicit path to the MMSSTV shared library")
-    # Removed duplicate --debug, --log-file, --quiet-log-file
-    mission.add_argument("--alsa-playback-device", type=str, help="Force ALSA playback device")
-    mission.add_argument("--alsa-mixer-device", type=str, help="Mixer target device/card for amixer commands")
-    mission.add_argument("--alsa-mixer-control", type=str, help="Mixer control name")
-    mission.add_argument("--alsa-target-volume", type=int, help="Target mixer volume percent for guardrails")
-    mission.add_argument("--alsa-max-safe-volume", type=int, help="Safe-volume warning threshold percent")
-    mission.add_argument("--no-alsa-volume-guardrails", action="store_true", help="Disable ALSA mixer guardrails")
-    mission.add_argument("--gps", action="store_true", help="Enable GPS polling")
-    mission.add_argument("--gps-device", type=str, help="Serial device path for the GPS module")
-    mission.add_argument("--gps-baud", type=int, help="GPS serial baud rate")
-    mission.add_argument("--gps-units", type=str, choices=["m", "ft"], help="Altitude units for GPS overlay")
-    # Removed duplicate --config
-    mission.add_argument("--generate-config", nargs="?", const=GENERATE_CONFIG_USE_CONFIG_PATH, help="Write a fully-documented default configuration file to PATH and exit")
+    panels = subparsers.add_parser("panels", add_help=False)
+    panels.add_argument("mode", nargs="?")
+    panels.add_argument("--mode", dest="mode_opt", default=None)
+    panels.add_argument("--tx", action="store_true")
+    panels.add_argument("--no-tx", action="store_true")
 
-
-
-    test = subparsers.add_parser("test", add_help=True)
-    test.add_argument("mode", nargs="?", help="SSTV mode to test (e.g. r36, pd50, m1)")
-    # All other options are flags
-    test.add_argument("--config", type=str, help="Path to config file")
-    test.add_argument("--tx", action="store_true", help="Enable radio transmission for test")
-    test.add_argument("--no-tx", action="store_true", help="Disable radio transmission for test (encode only)")
-    test.add_argument("--debug", action="store_true", help="Enable debug logging")
-    test.add_argument("--log-file", type=str, help="Log file path")
-    test.add_argument("--quiet-log-file", type=str, help="Log file path (suppress stdout)")
-    test.add_argument("--radio", type=str, choices=["vhf", "uhf", "both"], help="Radio band to use")
-    test.add_argument("--tx-power", type=str, choices=["low", "high"], help="TX power level")
-    test.add_argument("--pd-idle", type=str, choices=["release", "sleep"], help="Panel idle mode")
-    test.add_argument("--total", type=int, help="Total number of captures")
-    test.add_argument("--interval", type=float, help="Interval between captures (seconds)")
-    test.add_argument("--callsign", type=str, help="Override station callsign")
-    test.add_argument("--overlay-text", type=str, help="Overlay text override")
-    test.add_argument("--no-overlay", action="store_true", help="Disable overlay text")
-    test.add_argument("--format", type=str, choices=["wav", "aiff", "ogg"], help="Audio container format passed to SlowFrame")
-    test.add_argument("--sample-rate", type=int, help="Audio sample rate in Hz")
-    test.add_argument("--aspect", type=str, choices=["center", "pad", "stretch"], help="Image aspect-ratio handling")
-    test.add_argument("--output-dir", type=str, help="Directory for captured images, WAV files, and CSV logs")
-    test.add_argument("--slowframe", type=str, help="Path to the slowframe binary")
-    test.add_argument("--test-image", type=str, help="Image path for use with --test")
-    test.add_argument("--no-mmsstv", action="store_true", help="Disable MMSSTV library support")
-    test.add_argument("--mmsstv-lib", type=str, help="Explicit path to the MMSSTV shared library")
-    test.add_argument("--alsa-playback-device", type=str, help="Force ALSA playback device")
-    test.add_argument("--alsa-mixer-device", type=str, help="Mixer target device/card for amixer commands")
-    test.add_argument("--alsa-mixer-control", type=str, help="Mixer control name")
-    test.add_argument("--alsa-target-volume", type=int, help="Target mixer volume percent for guardrails")
-    test.add_argument("--alsa-max-safe-volume", type=int, help="Safe-volume warning threshold percent")
-    test.add_argument("--no-alsa-volume-guardrails", action="store_true", help="Disable ALSA mixer guardrails")
-    test.add_argument("--gps", action="store_true", help="Enable GPS polling")
-    test.add_argument("--gps-device", type=str, help="Serial device path for the GPS module")
-    test.add_argument("--gps-baud", type=int, help="GPS serial baud rate")
-    test.add_argument("--gps-units", type=str, choices=["m", "ft"], help="Altitude units for GPS overlay")
-
-
-
-    panels = subparsers.add_parser("panels", add_help=True)
-    panels.add_argument("mode", nargs="?", help="Panel mode to use")
-    # All other options are flags
-    panels.add_argument("--config", type=str, help="Path to config file")
-    panels.add_argument("--panel-source", type=str, help="Panel source directory")
-    panels.add_argument("--panel-selection", type=str, choices=["sequential", "random"], help="Panel selection policy")
-    panels.add_argument("--panel-count", type=int, help="Panel count")
-    panels.add_argument("--panel-mode", type=str, help="Panel mode override")
-    panels.add_argument("--tx", action="store_true", help="Enable radio transmission for panels")
-    panels.add_argument("--no-tx", action="store_true", help="Disable radio transmission for panels (encode only)")
-    panels.add_argument("--debug", action="store_true", help="Enable debug logging")
-    panels.add_argument("--log-file", type=str, help="Log file path")
-    panels.add_argument("--quiet-log-file", type=str, help="Log file path (suppress stdout)")
-    panels.add_argument("--radio", type=str, choices=["vhf", "uhf", "both"], help="Radio band to use")
-    panels.add_argument("--tx-power", type=str, choices=["low", "high"], help="TX power level")
-    panels.add_argument("--pd-idle", type=str, choices=["release", "sleep"], help="Panel idle mode")
-    panels.add_argument("--total", type=int, help="Total number of captures")
-    panels.add_argument("--interval", type=float, help="Interval between captures (seconds)")
-    panels.add_argument("--callsign", type=str, help="Override station callsign")
-    panels.add_argument("--overlay-text", type=str, help="Overlay text override")
-    panels.add_argument("--no-overlay", action="store_true", help="Disable overlay text")
-    panels.add_argument("--format", type=str, choices=["wav", "aiff", "ogg"], help="Audio container format passed to SlowFrame")
-    panels.add_argument("--sample-rate", type=int, help="Audio sample rate in Hz")
-    panels.add_argument("--aspect", type=str, choices=["center", "pad", "stretch"], help="Image aspect-ratio handling")
-    panels.add_argument("--output-dir", type=str, help="Directory for captured images, WAV files, and CSV logs")
-    panels.add_argument("--slowframe", type=str, help="Path to the slowframe binary")
-    panels.add_argument("--test-image", type=str, help="Image path for use with --test")
-    panels.add_argument("--no-mmsstv", action="store_true", help="Disable MMSSTV library support")
-    panels.add_argument("--mmsstv-lib", type=str, help="Explicit path to the MMSSTV shared library")
-    panels.add_argument("--alsa-playback-device", type=str, help="Force ALSA playback device")
-    panels.add_argument("--alsa-mixer-device", type=str, help="Mixer target device/card for amixer commands")
-    panels.add_argument("--alsa-mixer-control", type=str, help="Mixer control name")
-    panels.add_argument("--alsa-target-volume", type=int, help="Target mixer volume percent for guardrails")
-    panels.add_argument("--alsa-max-safe-volume", type=int, help="Safe-volume warning threshold percent")
-    panels.add_argument("--no-alsa-volume-guardrails", action="store_true", help="Disable ALSA mixer guardrails")
-    panels.add_argument("--gps", action="store_true", help="Enable GPS polling")
-    panels.add_argument("--gps-device", type=str, help="Serial device path for the GPS module")
-    panels.add_argument("--gps-baud", type=int, help="GPS serial baud rate")
-    panels.add_argument("--gps-units", type=str, choices=["m", "ft"], help="Altitude units for GPS overlay")
-
-
-
-    diag = subparsers.add_parser("diag", add_help=True)
+    diag = subparsers.add_parser("diag", add_help=False)
     diag_subparsers = diag.add_subparsers(dest="diag_verb")
-    diag_subparsers.add_parser("help", help="Show all diag options and usage")
-    diag_ptt = diag_subparsers.add_parser("ptt", add_help=True)
-    diag_ptt.add_argument("--seconds", type=float, default=1.0, help="Duration to key PTT (default 1.0s)")
-    diag_led = diag_subparsers.add_parser("led", add_help=True)
-    diag_led.add_argument("--seconds", type=float, default=2.0, help="Duration per state (default 2.0s)")
-    diag_led.add_argument("--no-confirm", action="store_true", help="Skip interactive visual confirmation prompt")
-    diag_gps = diag_subparsers.add_parser("gps", add_help=True)
-    diag_gps.add_argument("--seconds", type=float, default=20.0, help="Duration for GPS test (default 20s)")
-    diag_subparsers.add_parser("alsa", add_help=True)
 
+    diag_ptt = diag_subparsers.add_parser("ptt", add_help=False)
+    diag_ptt.add_argument("seconds", nargs="?")
+    diag_ptt.add_argument("--seconds", dest="seconds_opt", default=None)
 
+    diag_led = diag_subparsers.add_parser("led", add_help=False)
+    diag_led.add_argument("seconds", nargs="?")
+    diag_led.add_argument("--seconds", dest="seconds_opt", default=None)
+    diag_led.add_argument("--no-confirm", action="store_true")
 
-    info = subparsers.add_parser("info", add_help=True)
+    diag_gps = diag_subparsers.add_parser("gps", add_help=False)
+    diag_gps.add_argument("seconds", nargs="?")
+    diag_gps.add_argument("--seconds", dest="seconds_opt", default=None)
+
+    diag_subparsers.add_parser("alsa", add_help=False)
+
+    info = subparsers.add_parser("info", add_help=False)
     info_subparsers = info.add_subparsers(dest="info_verb")
-    info_subparsers.add_parser("help", help="Show all info options and usage")
-    info_subparsers.add_parser("modes", add_help=True)
-    info_subparsers.add_parser("schedules", add_help=True)
-    info_explain = info_subparsers.add_parser("explain", add_help=True)
+
+    info_subparsers.add_parser("modes", add_help=False)
+    info_subparsers.add_parser("schedules", add_help=False)
+    info_explain = info_subparsers.add_parser("explain", add_help=False)
     info_explain.add_argument("topic", nargs="?")
     info_explain.add_argument("--topic", dest="topic_opt", default=None)
-    info_subparsers.add_parser("topics", add_help=True)
-    info_subparsers.add_parser("quick", add_help=True)
-    info_subparsers.add_parser("flight", add_help=True)
-    info_subparsers.add_parser("examples", add_help=True)
+    info_subparsers.add_parser("topics", add_help=False)
+    info_subparsers.add_parser("quick", add_help=False)
+    info_subparsers.add_parser("flight", add_help=False)
+    info_subparsers.add_parser("examples", add_help=False)
 
-
-
-    config = subparsers.add_parser("config", add_help=True)
+    config = subparsers.add_parser("config", add_help=False)
     config_subparsers = config.add_subparsers(dest="config_verb")
-    config_subparsers.add_parser("help", help="Show all config options and usage")
-    config_generate = config_subparsers.add_parser("generate", add_help=True)
+    config_generate = config_subparsers.add_parser("generate", add_help=False)
     config_generate.add_argument("path", nargs="?")
     config_generate.add_argument("--output", dest="output_opt", default=None)
 
@@ -4928,83 +4954,122 @@ def _rewrite_verb_argv(argv: List[str]) -> Optional[List[str]]:
 
     rewritten: List[str] = []
 
-    # Remove all legacy flag rewrites. Only use legacy parser for true legacy flags.
+    if verb == "mission":
+        if getattr(namespace, "no_tx", False) and "--no-tx" not in passthrough:
+            rewritten.append("--no-tx")
+        rewritten.extend(passthrough)
+        return rewritten
+
+    if verb == "test":
+        mode_name = getattr(namespace, "mode_opt", None) or getattr(namespace, "mode", None)
+        if not mode_name:
+            print("ERROR: 'test' requires MODE (example: pi_sstv.py test r36)", file=sys.stderr)
+            sys.exit(2)
+        rewritten.extend(["--test", mode_name])
+        # Safety default for verb mode: test runs encode-only unless --tx is explicit.
+        explicit_tx = getattr(namespace, "tx", False)
+        explicit_no_tx = getattr(namespace, "no_tx", False)
+        if explicit_no_tx and "--no-tx" not in passthrough:
+            rewritten.append("--no-tx")
+        elif not explicit_tx and "--no-tx" not in passthrough:
+            rewritten.append("--no-tx")
+        rewritten.extend(passthrough)
+        return rewritten
+
+    if verb == "panels":
+        mode_name = getattr(namespace, "mode_opt", None) or getattr(namespace, "mode", None)
+        rewritten.append("--test-panels")
+        if mode_name:
+            rewritten.append(mode_name)
+        # Safety default for verb mode: panels runs encode-only unless --tx is explicit.
+        explicit_tx = getattr(namespace, "tx", False)
+        explicit_no_tx = getattr(namespace, "no_tx", False)
+        if explicit_no_tx and "--no-tx" not in passthrough:
+            rewritten.append("--no-tx")
+        elif not explicit_tx and "--no-tx" not in passthrough:
+            rewritten.append("--no-tx")
+        rewritten.extend(passthrough)
+        return rewritten
+
+    if verb == "diag":
+        diag_verb = getattr(namespace, "diag_verb", None)
+        if diag_verb == "ptt":
+            seconds = getattr(namespace, "seconds_opt", None) or getattr(namespace, "seconds", None)
+            rewritten.append("--ptt-test")
+            if seconds is not None:
+                rewritten.append(str(seconds))
+        elif diag_verb == "led":
+            seconds = getattr(namespace, "seconds_opt", None) or getattr(namespace, "seconds", None)
+            rewritten.append("--led-test")
+            if seconds is not None:
+                rewritten.append(str(seconds))
+            if getattr(namespace, "no_confirm", False):
+                rewritten.append("--led-test-no-confirm")
+        elif diag_verb == "gps":
+            seconds = getattr(namespace, "seconds_opt", None) or getattr(namespace, "seconds", None)
+            rewritten.append("--gps-test")
+            if seconds is not None:
+                rewritten.append(str(seconds))
+        elif diag_verb == "alsa":
+            rewritten.append("--alsa-volume-check")
+        else:
+            print("ERROR: diag requires subcommand: ptt, led, gps, or alsa", file=sys.stderr)
+            sys.exit(2)
+
+        rewritten.extend(passthrough)
+        return rewritten
+
+    if verb == "info":
+        info_verb = getattr(namespace, "info_verb", None)
+        if info_verb == "modes":
+            rewritten.append("--list-modes")
+        elif info_verb == "schedules":
+            rewritten.append("--list-schedules")
+        elif info_verb == "explain":
+            topic = getattr(namespace, "topic_opt", None) or getattr(namespace, "topic", None)
+            if not topic:
+                print("ERROR: info explain requires TOPIC (example: pi_sstv.py info explain schedule)", file=sys.stderr)
+                sys.exit(2)
+            rewritten.extend(["--explain", topic])
+        elif info_verb == "topics":
+            rewritten.append("--help-topics")
+        elif info_verb == "quick":
+            rewritten.append("--help-quick")
+        elif info_verb == "flight":
+            rewritten.append("--help-flight")
+        elif info_verb == "examples":
+            rewritten.append("--help-examples")
+        else:
+            print(
+                "ERROR: info requires subcommand: modes, schedules, explain, topics, quick, flight, or examples",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+        rewritten.extend(passthrough)
+        return rewritten
+
+    if verb == "config":
+        config_verb = getattr(namespace, "config_verb", None)
+        if config_verb != "generate":
+            print("ERROR: config requires subcommand: generate", file=sys.stderr)
+            sys.exit(2)
+
+        output_path = getattr(namespace, "output_opt", None) or getattr(namespace, "path", None)
+        rewritten.append("--generate-config")
+        if output_path:
+            rewritten.append(output_path)
+        rewritten.extend(passthrough)
+        return rewritten
+
     return None
 
 
 def parse_args(argv: Optional[List[str]] = None):
     argv_list = list(argv) if argv is not None else list(sys.argv[1:])
-    # If no arguments or only --help/-h, show modern verb-based usage
-    if not argv_list or (len(argv_list) == 1 and argv_list[0] in ("--help", "-h")):
-        print("""
-HamWing SSTV Mission Controller — Verb-based CLI\n\nUsage:\n  python3 pi_sstv.py <verb> [options]\n\nVerbs:\n  mission      Main capture-and-transmit loop\n  test         Single-shot pipeline test (e.g. test r36)\n  panels       Dedicated test panel/card workflow\n  diag         Diagnostics: ptt, led, gps, alsa\n  info         Info, help, topics, explain\n  config       Generate or manage config files\n\nExamples:\n  python3 pi_sstv.py mission --schedule chase_uhf\n  python3 pi_sstv.py test pd50 --no-tx\n  python3 pi_sstv.py diag led 2 --no-confirm\n  python3 pi_sstv.py info explain schedule\n  python3 pi_sstv.py config generate ./myconfig.cfg\n\nFor a list of all verbs and options, run:\n  python3 pi_sstv.py info topics\n  python3 pi_sstv.py info help\n        """)
-        sys.exit(0)
-
-
-    # If a verb is given with no flags, print summary for that verb
-    verbs = {"mission", "test", "panels", "diag", "info", "config", "bench", "preflight"}
-    if argv_list[0] in verbs and len(argv_list) == 1:
-        verb = argv_list[0]
-        if verb == "mission":
-            print("""
-mission: Main capture-and-transmit loop
-  Subverbs: help
-  Flags: --tx, --no-tx
-  Run 'python3 pi_sstv.py mission help' for all options.
-            """)
-            sys.exit(0)
-        if verb == "test":
-            print("""
-test: Single-shot pipeline test
-  Subverbs: help
-  Positional: mode
-  Flags: --mode, --tx, --no-tx
-  Run 'python3 pi_sstv.py test help' for all options.
-            """)
-            sys.exit(0)
-        if verb == "panels":
-            print("""
-panels: Dedicated test panel/card workflow
-  Subverbs: help
-  Positional: mode
-  Flags: --mode, --tx, --no-tx
-  Run 'python3 pi_sstv.py panels help' for all options.
-            """)
-            sys.exit(0)
-        if verb == "diag":
-            print("""
-diag: Diagnostics (ptt, led, gps, alsa)
-  Subverbs: ptt, led, gps, alsa, help
-  Run 'python3 pi_sstv.py diag help' for all options.
-            """)
-            sys.exit(0)
-        if verb == "info":
-            print("""
-info: Info, help, topics, explain
-  Subverbs: modes, schedules, explain, topics, quick, flight, examples, help
-  Run 'python3 pi_sstv.py info help' for all options.
-            """)
-            sys.exit(0)
-        if verb == "config":
-            print("""
-config: Generate or manage config files
-  Subverbs: generate, help
-  Run 'python3 pi_sstv.py config help' for all options.
-            """)
-            sys.exit(0)
-
-    # If a verb is given with 'help' subverb, print full help for that verb
-    if argv_list[0] in verbs and len(argv_list) == 2 and argv_list[1] == "help":
-        parser = _build_verb_parser()
-        parser.parse_args([argv_list[0], "--help"])
-        sys.exit(0)
-
-    # If the first argument is a known verb, use the verb parser.
-    verbs = {"mission", "test", "panels", "diag", "info", "config", "bench", "preflight"}
-    if argv_list and argv_list[0] in verbs:
-        parser = _build_verb_parser()
-        return parser.parse_args(argv_list)
-    # Otherwise, fall back to legacy parser for true legacy flags.
+    rewritten = _rewrite_verb_argv(argv_list)
+    if rewritten is not None:
+        return parse_args_legacy(rewritten)
     return parse_args_legacy(argv_list)
 
 
@@ -7066,158 +7131,69 @@ def main():
             "\n"
             "No arguments provided.  Common starting points:\n"
             "\n"
-            "  Mission run (from config):\n"
+            "  Recommended verb interface:\n"
             "    python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg\n"
-            "\n"
-            "  Single pipeline test (no radio required):\n"
             "    python3 pi_sstv.py test r36 --no-tx\n"
-            "\n"
-            "  Dedicated panel/card test workflow:\n"
+            "    python3 pi_sstv.py test r36 --tx\n"
             "    python3 pi_sstv.py panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
-            "\n"
-            "  Hardware diagnostics:\n"
             "    python3 pi_sstv.py diag led 1.5\n"
-            "    python3 pi_sstv.py diag gps 30\n"
             "\n"
-            "  Show all verbs and help:\n"
-            "    python3 pi_sstv.py help\n"
+            "  Legacy flag interface (still supported):\n"
             "\n"
-            "  Operator guides:\n"
-            "    python3 pi_sstv.py info quick\n"
-            "    python3 pi_sstv.py info flight\n"
-            "    python3 pi_sstv.py info examples\n"
-            "    python3 pi_sstv.py info topics\n"
+            "  Generate a config file (recommended first step):\n"
+            f"    python3 pi_sstv.py --generate-config\n"
+            "\n"
+            "  Run a bench encode test (no radio required):\n"
+            "    python3 pi_sstv.py --test r36 --no-tx\n"
+            "\n"
+            "  Run dedicated panel/card test workflow:\n"
+            "    python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
+            "\n"
+            "  Run hardware diagnostics:\n"
+            "    python3 pi_sstv.py --led-test 1.5\n"
+            "    python3 pi_sstv.py --gps-test 30\n"
+            "\n"
+            "  Start a live HAB mission with a config file:\n"
+            "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
+            "\n"
+            "  Show full help and all options:\n"
+            "    python3 pi_sstv.py --help-all\n"
+            "\n"
+            "  Use guided operator help:\n"
+            "    python3 pi_sstv.py --help-quick\n"
+            "    python3 pi_sstv.py --help-flight\n"
+            "    python3 pi_sstv.py --help-examples\n"
+            "    python3 pi_sstv.py --help-topics\n"
         )
         sys.exit(0)
 
-
     args = parse_args(cli_argv)
-
-    # Verb-based dispatch (run before legacy/info-only handlers)
-    if hasattr(args, "verb") and args.verb:
-        if args.verb == "info":
-            if getattr(args, "info_verb", None) == "modes":
-                list_modes()
-                return
-            if getattr(args, "info_verb", None) == "schedules":
-                config_path = args.config
-                if config_path is None and os.path.isfile(DEFAULT_CONFIG_PATH):
-                    config_path = DEFAULT_CONFIG_PATH
-                if config_path:
-                    load_config(config_path)
-                list_schedules()
-                return
-            if getattr(args, "info_verb", None) == "explain":
-                print_explain(args.explain)
-                return
-            if getattr(args, "info_verb", None) == "topics":
-                print_help_topics()
-                return
-            if getattr(args, "info_verb", None) == "quick":
-                print_help_quick()
-                return
-            if getattr(args, "info_verb", None) == "flight":
-                print_help_flight()
-                return
-            if getattr(args, "info_verb", None) == "examples":
-                print_help_examples()
-                return
-            if getattr(args, "info_verb", None) == "help":
-                print_help_cli_overview()
-                return
-            print("[info] Unknown or missing subverb.")
-            return
-        if args.verb == "diag":
-            if getattr(args, "diag_verb", None) == "led":
-                # Accept positional or --seconds for duration
-                seconds = getattr(args, "seconds", None)
-                if seconds is None:
-                    seconds = getattr(args, "seconds_opt", None)
-                if seconds is None:
-                    seconds = 1.5
-                else:
-                    seconds = float(seconds)
-                no_confirm = getattr(args, "no_confirm", False)
-                run_led_test(seconds, not no_confirm)
-                return
-            if getattr(args, "diag_verb", None) == "ptt":
-                get_active_ptt_pins()
-                return
-            if getattr(args, "diag_verb", None) == "gps":
-                run_gps_test(args.duration)
-                return
-            if getattr(args, "diag_verb", None) == "alsa":
-                print(describe_alsa_guardrails())
-                return
-            if getattr(args, "diag_verb", None) == "help":
-                print_help_cli_overview()
-                return
-            print("[diag] Unknown or missing subverb.")
-            return
-        if args.verb == "mission":
-            # Run main mission workflow
-            # Map all relevant args to legacy handler logic
-            # (Assume legacy main mission logic is below this dispatch)
-            # If you want to keep the mission logic in main, just fall through
-            return  # Remove this if main mission logic is below
-        if args.verb == "test":
-            # Run main test workflow
-            # Map all relevant args to run_test_pipeline
-            mode = getattr(args, "mode", None) or getattr(args, "mode_opt", None)
-            from types import SimpleNamespace
-            runtime_state = RuntimeState()
-            run_test_pipeline(mode, args, runtime_state)
-            return
-        if args.verb == "panels":
-            # Run main panels workflow
-            mode = getattr(args, "mode", None) or getattr(args, "mode_opt", None)
-            from types import SimpleNamespace
-            runtime_state = RuntimeState()
-            run_test_panel_pipeline(mode, args, runtime_state)
-            return
-        if args.verb == "config":
-            if getattr(args, "config_verb", None) == "generate":
-                output_path = args.generate_config
-                if output_path == GENERATE_CONFIG_USE_CONFIG_PATH:
-                    output_path = args.config or DEFAULT_CONFIG_PATH
-                generate_default_config(output_path)
-                return
-            if getattr(args, "config_verb", None) == "help":
-                print_help_cli_overview()
-                return
-            print("[config] Unknown or missing subverb.")
-            return
-        # If verb is mission/test/panels, fall through to main mission logic below
-        # Otherwise, unknown verb
-        if args.verb not in ("mission", "test", "panels"):
-            print(f"[main] Unknown verb: {args.verb}")
-            return
 
     # Info-only modes — no GPIO, no paths, no subprocess needed
     # For these short-lived modes, do NOT send READY=1 to systemd because they exit
     # immediately and the service should not be marked as active.  These are utility
     # operations, not long-running services.
-    if getattr(args, "help_quick", False):
+    if args.help_quick:
         print_help_quick()
         return
-    if getattr(args, "help_flight", False):
+    if args.help_flight:
         print_help_flight()
         return
-    if getattr(args, "help_examples", False):
+    if args.help_examples:
         print_help_examples()
         return
-    if getattr(args, "help_all", False):
+    if args.help_all:
         # If this path is hit directly, show the concise overview and exit.
         # Full argparse help is handled by the pre-parse routing above.
         print_help_cli_overview()
         return
-    if getattr(args, "help_topics", False):
+    if args.help_topics:
         print_help_topics()
         return
-    if getattr(args, "list_modes", False):
+    if args.list_modes:
         list_modes()
         return
-    if getattr(args, "list_schedules", False):
+    if args.list_schedules:
         config_path = args.config
         if config_path is None and os.path.isfile(DEFAULT_CONFIG_PATH):
             config_path = DEFAULT_CONFIG_PATH
@@ -7225,22 +7201,15 @@ def main():
             load_config(config_path)
         list_schedules()
         return
-    if getattr(args, "explain", None):
+    if args.explain:
         print_explain(args.explain)
         return
-    if getattr(args, "generate_config", None) is not None:
+    if args.generate_config is not None:
         output_path = args.generate_config
         if output_path == GENERATE_CONFIG_USE_CONFIG_PATH:
             output_path = args.config or DEFAULT_CONFIG_PATH
         generate_default_config(output_path)
         return
-
-    # If we reach here, run the main mission/test/panels workflow if a verb was set
-    if hasattr(args, "verb") and args.verb in ("mission", "test", "panels"):
-        # ...existing mission/test/panels workflow logic...
-        # This is the main mission loop, test runner, or panels workflow
-        # (fall through to rest of main as before)
-        pass
 
     selected_log_file = args.quiet_log_file or args.log_file
     quiet_stdout = args.quiet_log_file is not None
