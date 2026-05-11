@@ -6,7 +6,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 import time
-from subprocess import run
+from subprocess import run, CalledProcessError
 from datetime import datetime, timezone
 import csv
 import os
@@ -16,9 +16,21 @@ import RPi.GPIO as GPIO
 
 logger = logging.getLogger("pi_sstv")
 
+SCRIPT_VERSION = "2.0"
+
 # Paths and constants
 BASE_DIR = "/home/pi-user"
 DEFAULT_CONFIG_PATH = os.path.join(BASE_DIR, "pi_sstv.cfg")
+
+# Ordered list of directories searched for pi_sstv.cfg when no --config flag is
+# given.  The first file found is used.  Evaluated at runtime so $HOME is resolved
+# for the actual calling user.
+CONFIG_SEARCH_PATHS = [
+    os.path.join(os.getcwd(), "pi_sstv.cfg"),                          # .  (cwd)
+    os.path.join(os.path.expanduser("~"), ".pi_sstv", "pi_sstv.cfg"),  # ~/.pi_sstv/
+    os.path.join("/etc", "pi_sstv.cfg"),                               # /etc/
+    DEFAULT_CONFIG_PATH,                                               # /home/pi-user/
+]
 TIMESTAMPED_DIR = os.path.join(BASE_DIR, "Desktop/HAB")
 PI_SSTV_BIN = os.path.join(BASE_DIR, "pi-sstv", "pi-sstv")
 
@@ -55,6 +67,7 @@ SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY = 70
 
 # Optional station ID overlay / CW ID
 STATION_CALLSIGN = ""
+OVERLAY_TEXT_OVERRIDE = ""  # If non-empty, replaces the entire overlay text on every image.
 SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = False
 SLOWFRAME_CALLSIGN_OVERLAY_SIZE = 13
 SLOWFRAME_CALLSIGN_OVERLAY_POSITION = "top-right"
@@ -68,7 +81,20 @@ SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = "black"
 
 PIC_INTERVAL = 10
 PIC_TOTAL = 500
-MIN_CAPTURES_BETWEEN_TRANSMISSIONS = 12
+MISSION_ENABLED = True  # Set to false in config to disable mission (service exits cleanly, no watchdog restart)
+
+# Dedicated image panel/card test workflow (separate from mission fallback).
+# Used only when --test-panels is invoked explicitly.
+TEST_PANEL_SOURCE = ""           # File or folder path; required when --test-panels is used.
+TEST_PANEL_SELECTION = "sequential"  # sequential or random (when source is a folder)
+TEST_PANEL_COUNT = 1
+TEST_PANEL_DEFAULT_MODE = "pd50"
+TEST_PANEL_INCLUDE_CALLSIGN_OVERLAY = True
+TEST_PANEL_INCLUDE_TIMESTAMP_OVERLAY = False
+TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN = False  # FCC Part 97 guardrail
+TEST_PANEL_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+MIN_CAPTURES_BETWEEN_TRANSMISSIONS = 0  # 0 = no capture-count floor; rely on cooldown gating only
 ROLLING_DUTY_CYCLE_WINDOW_SECONDS = 3600
 MAX_TRANSMIT_DUTY_CYCLE = 0.25
 
@@ -90,22 +116,42 @@ GPIO_PIN_MODE = GPIO.BCM
 # Optional peripherals below are documented only and are not used by this script.
 
 # DRA818 GPIO pin definitions
-DRA818_PTT_PIN = 27
-DRA818_POWER_DOWN_PIN = 4
-DRA818_POWER_LEVEL_PIN = 22
+DRA818_VHF_PTT_PIN = 27      # BCM 27, physical pin 13 — active-LOW VHF TX key
+DRA818_UHF_PTT_PIN = 17      # BCM 17, physical pin 11 — active-LOW UHF TX key
+DRA818_POWER_DOWN_PIN = 4    # BCM  4, physical pin  7 — HIGH=active, LOW=sleep
+DRA818_POWER_LEVEL_PIN = 22  # BCM 22, physical pin 15 — HIGH=1 W, LOW=0.5 W
+
+# Active radio band selection: "vhf", "uhf", or "both"
+ACTIVE_RADIO_BAND = "vhf"
+TX_POWER_LEVEL = "low"      # "low"=0.5 W (HL LOW), "high"=1 W (HL HIGH)
+PD_IDLE_MODE = "release"    # "release"=INPUT (Feather owns PD), "sleep"=OUTPUT LOW
+
+# Status LED — GPIO-driven LED used to signal operational state to the operator.
+# Wiring: GPIO pin → current-limiting resistor (330 Ω) → LED anode → cathode → GND
+# active_high=True means GPIO HIGH = LED on (common-cathode wiring).
+STATUS_LED_ENABLED     = True
+STATUS_LED_PIN         = 21        # BCM numbering; physical pin 40
+STATUS_LED_ACTIVE_HIGH = True
+STATUS_LED_PWM_FREQ    = 120       # Hz — high enough that PWM flicker is invisible
+STATUS_LED_MAX_PCT     = 100       # 0–100; cap brightness if LED is very bright
 
 # PWM audio routing used by aplay via the Raspberry Pi audio overlay
 AUDIO_LEFT_PWM_PIN = 12
 AUDIO_RIGHT_PWM_PIN = 13
 AUDIO_OVERLAY = "dtoverlay=audremap,enable_jack=on"
+APLAY_DEVICE = "plughw:CARD=Headphones,DEV=0"  # default device for dtoverlay=audremap
 
 # Alternate audio pair if config.txt uses dtoverlay=audremap,pins_18_19,enable_jack=on
 # AUDIO_LEFT_PWM_PIN = 18
 # AUDIO_RIGHT_PWM_PIN = 19
 
-# Optional GPS UART pins (not used by this script)
+# Optional GPS UART pins (used by diag gps)
 # GPS_UART_TX_PIN = 14  # physical pin 8
 # GPS_UART_RX_PIN = 15  # physical pin 10
+GPS_SERIAL_PORT = "/dev/ttyS0"   # Pi Zero UART; change to /dev/ttyAMA0 if needed
+GPS_SERIAL_BAUD = 9600
+GPS_ENABLE_OVERLAY = False        # Append altitude + 8-char Maidenhead grid square to each image overlay
+GPS_OVERLAY_TIMEOUT = 3           # Seconds to wait for a GGA fix per encode cycle
 
 # Optional I2C sensor pins (not used by this script)
 # SENSOR_I2C_SDA_PIN = 2  # physical pin 3
@@ -118,6 +164,7 @@ class ModeProfile:
     duration_seconds: int
     cooldown_seconds: int
     image_width: int = 320
+    image_height: Optional[int] = None
     requires_mmsstv: bool = False
     fallback_mode: Optional[str] = None
     description: str = ""
@@ -138,8 +185,9 @@ MODE_PROFILES = {
     "robot8bw": ModeProfile(
         name="robot8bw",
         duration_seconds=8,
-        cooldown_seconds=90,
+        cooldown_seconds=8,
         image_width=160,
+        image_height=120,
         requires_mmsstv=True,
         fallback_mode="bw24",
         description="Ultra-fast MMSSTV monochrome status frame for tight duty-cycle budgets.",
@@ -147,8 +195,9 @@ MODE_PROFILES = {
     "robot12bw": ModeProfile(
         name="robot12bw",
         duration_seconds=12,
-        cooldown_seconds=90,
+        cooldown_seconds=12,
         image_width=160,
+        image_height=120,
         requires_mmsstv=True,
         fallback_mode="bw24",
         description="Very fast MMSSTV monochrome mode for rapid update windows.",
@@ -156,43 +205,57 @@ MODE_PROFILES = {
     "bw24": ModeProfile(
         name="bw24",
         duration_seconds=24,
-        cooldown_seconds=120,
+        cooldown_seconds=24,
+        image_width=320,
+        image_height=120,
         description="Fast monochrome native mode for low duty-cycle updates.",
-    ),
-    "m4": ModeProfile(
-        name="m4",
-        duration_seconds=29,
-        cooldown_seconds=135,
-        description="Fast native Martin color mode; half the airtime of M2; ideal for rapid-update ascent phases.",
     ),
     "r36": ModeProfile(
         name="r36",
         duration_seconds=36,
-        cooldown_seconds=150,
+        cooldown_seconds=36,
+        image_width=320,
+        image_height=240,
         description="Fast native color mode for regular balloon image updates.",
     ),
     "m2": ModeProfile(
         name="m2",
         duration_seconds=58,
-        cooldown_seconds=240,
+        cooldown_seconds=58,
+        image_width=320,
+        image_height=256,
         description="Balanced native mode with good compatibility.",
     ),
     "s2": ModeProfile(
         name="s2",
         duration_seconds=71,
-        cooldown_seconds=300,
+        cooldown_seconds=71,
+        image_width=320,
+        image_height=256,
         description="Native Scottie mode with strong compatibility and moderate airtime.",
+    ),
+    "sdx": ModeProfile(
+        name="sdx",
+        duration_seconds=269,
+        cooldown_seconds=269,
+        image_width=320,
+        image_height=256,
+        description="Native Scottie DX mode for very high-detail, long-duration snapshots.",
     ),
     "r72": ModeProfile(
         name="r72",
         duration_seconds=72,
-        cooldown_seconds=300,
+        cooldown_seconds=72,
+        image_width=320,
+        image_height=240,
         description="Higher-quality native Robot mode.",
     ),
     "pd50": ModeProfile(
         name="pd50",
         duration_seconds=50,
-        cooldown_seconds=240,
+        cooldown_seconds=50,
+        image_width=320,
+        image_height=256,
         requires_mmsstv=True,
         fallback_mode="m2",
         description="Fast MMSSTV PD mode for efficient color updates.",
@@ -200,7 +263,9 @@ MODE_PROFILES = {
     "pd90": ModeProfile(
         name="pd90",
         duration_seconds=90,
-        cooldown_seconds=360,
+        cooldown_seconds=90,
+        image_width=320,
+        image_height=256,
         requires_mmsstv=True,
         fallback_mode="r36",
         description="Popular MMSSTV fast color mode when the encoder library is available.",
@@ -208,20 +273,25 @@ MODE_PROFILES = {
     "m1": ModeProfile(
         name="m1",
         duration_seconds=114,
-        cooldown_seconds=480,
+        cooldown_seconds=114,
+        image_width=320,
+        image_height=256,
         description="High-quality native Martin mode for less frequent transmissions.",
     ),
     "s1": ModeProfile(
         name="s1",
         duration_seconds=110,
-        cooldown_seconds=480,
+        cooldown_seconds=110,
+        image_width=320,
+        image_height=256,
         description="Native Scottie high-quality mode for periodic detail shots.",
     ),
     "pd120": ModeProfile(
         name="pd120",
         duration_seconds=120,
-        cooldown_seconds=540,
+        cooldown_seconds=120,
         image_width=640,
+        image_height=496,
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Higher-quality MMSSTV mode with a larger cooldown budget.",
@@ -229,8 +299,9 @@ MODE_PROFILES = {
     "pd160": ModeProfile(
         name="pd160",
         duration_seconds=160,
-        cooldown_seconds=660,
+        cooldown_seconds=160,
         image_width=512,
+        image_height=400,
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Slower MMSSTV quality mode for longer detail passes.",
@@ -238,8 +309,9 @@ MODE_PROFILES = {
     "pd180": ModeProfile(
         name="pd180",
         duration_seconds=180,
-        cooldown_seconds=720,
+        cooldown_seconds=180,
         image_width=640,
+        image_height=496,
         requires_mmsstv=True,
         fallback_mode="m1",
         description="High-detail MMSSTV mode, best for occasional mission snapshots.",
@@ -247,8 +319,9 @@ MODE_PROFILES = {
     "fax480": ModeProfile(
         name="fax480",
         duration_seconds=180,
-        cooldown_seconds=720,
+        cooldown_seconds=180,
         image_width=512,
+        image_height=480,
         requires_mmsstv=True,
         fallback_mode="m1",
         description="High-detail MMSSTV mode best reserved for test windows.",
@@ -256,8 +329,9 @@ MODE_PROFILES = {
     "pd240": ModeProfile(
         name="pd240",
         duration_seconds=240,
-        cooldown_seconds=900,
+        cooldown_seconds=240,
         image_width=640,
+        image_height=496,
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Very high quality MMSSTV PD mode for science windows and horizon detail passes.",
@@ -265,76 +339,242 @@ MODE_PROFILES = {
     "pd290": ModeProfile(
         name="pd290",
         duration_seconds=290,
-        cooldown_seconds=1080,
+        cooldown_seconds=290,
         image_width=800,
+        image_height=616,
         requires_mmsstv=True,
         fallback_mode="pd180",
         description="Highest quality MMSSTV mode; reserve for occasional best-shot captures at peak altitude.",
     ),
 }
 
-TRANSMIT_SCHEDULE_PROFILE = "hab_cruise"
-TRANSMIT_SCHEDULE_PROFILES = {
-    # hab_climb: absolute maximum update rate, mono-heavy — steepest part of the climb.
-    "hab_climb": (
-        "robot8bw",
+# Accept common SlowFrame/MMSSTV naming variants and punctuation styles.
+# Keys are normalized with non-alphanumeric characters removed.
+MODE_ALIASES = {
+    "bw8": "robot8bw",
+    "bw12": "robot12bw",
+    "robot24": "bw24",
+    "robot36": "r36",
+    "robot72": "r72",
+    "martin1": "m1",
+    "martin2": "m2",
+    "scottie1": "s1",
+    "scottie2": "s2",
+    "scottiedx": "sdx",
+}
+
+# Mode key -> exact token to pass to `slowframe -p`.
+# Defaults to canonical keys until runtime discovery captures precise tokens.
+MODE_PROTOCOL_TOKENS = {name: name for name in MODE_PROFILES}
+
+
+def canonicalize_mode_name(mode_name: Optional[str]) -> Optional[str]:
+    """Normalize user-provided mode names/aliases to script canonical keys."""
+    if mode_name is None:
+        return None
+    raw = mode_name.strip().lower()
+    if not raw:
+        return raw
+    if raw in MODE_PROFILES:
+        return raw
+    normalized = re.sub(r"[^a-z0-9]", "", raw)
+    if normalized in MODE_PROFILES:
+        return normalized
+    if normalized in MODE_ALIASES:
+        return MODE_ALIASES[normalized]
+    return raw
+
+
+def _normalize_schedule_mode_name(mode_name: Optional[str]) -> Optional[str]:
+    if mode_name is None:
+        return None
+    raw = mode_name.strip().lower()
+    if not raw:
+        return None
+    return canonicalize_mode_name(raw) or raw
+
+
+def _is_valid_schedule_mode_token(mode_name: str) -> bool:
+    return re.fullmatch(r"[a-z0-9][a-z0-9_/-]*", mode_name) is not None
+
+
+def _parse_schedule_mode_list(raw_value: str, context: str) -> Tuple[str, ...]:
+    tokens = [
+        _normalize_schedule_mode_name(token)
+        for token in re.split(r"[\s,]+", raw_value)
+        if token.strip()
+    ]
+    modes = tuple(token for token in tokens if token)
+    if not modes:
+        raise ValueError(f"{context}: at least one mode is required")
+    invalid_tokens = [token for token in modes if not _is_valid_schedule_mode_token(token)]
+    if invalid_tokens:
+        raise ValueError(f"{context}: invalid mode token(s): {', '.join(invalid_tokens)}")
+    return modes
+
+
+TRANSMIT_SCHEDULE_PROFILE = "standard"
+BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
+    # mono: Monochrome status-only for maximum update frequency.
+    "mono": (
         "robot12bw",
         "bw24",
-        "m4",
+    ),
+    # rapid: Fast color + status filler for frequent imaging.
+    "rapid": (
         "robot12bw",
         "r36",
     ),
-    # hab_rapid: fast color rotation with short cooldowns — upper ascent / release phase.
-    "hab_rapid": (
-        "robot12bw",
-        "m4",
+    # standard: Balanced quality and frequency (default).
+    "standard": (
         "r36",
-        "robot12bw",
-        "m4",
         "pd50",
+        "pd90",
     ),
-    # hab_cruise: balanced default — mixes status frames and quality shots across the full flight.
-    "hab_cruise": (
-        "robot12bw",
+    # quality: Medium-quality color with longer cooldown budgets.
+    "quality": (
+        "pd50",
+        "pd120",
+    ),
+    # high-res: Highest quality detailed imagery.
+    "high-res": (
+        "pd120",
+        "pd290",
+    ),
+    # native-rapid: Fast native-only rotation; no MMSSTV dependency.
+    "native-rapid": (
+        "bw24",
+        "r36",
+    ),
+    # native-balanced: General native-only mission profile; no MMSSTV dependency.
+    "native-balanced": (
         "r36",
         "m2",
-        "pd90",
         "s2",
+    ),
+    # native-detail: Higher-detail native-only rotation; no MMSSTV dependency.
+    "native-detail": (
         "r72",
         "m1",
-    ),
-    # hab_float: quality-first — anchored by PD modes for float altitude and science windows.
-    "hab_float": (
-        "r36",
-        "pd90",
-        "robot12bw",
-        "pd120",
-        "robot12bw",
-        "pd180",
-        "r36",
-        "pd240",
+        "s1",
     ),
 }
-TRANSMIT_SCHEDULE_DESCRIPTIONS = {
-    "hab_climb":  "Maximum update-rate profile. Monochrome frames dominate to minimise cooldown "
-                  "gaps during the steepest part of the climb.",
-    "hab_rapid":  "Short bursts + one PD color shot per rotation. Best during rapid ascent "
-                  "when update rate matters more than image quality.",
-    "hab_cruise": "Status frames mixed with progressive quality shots. Default mission profile "
-                  "for the full flight envelope.",
-    "hab_float":  "Quality-first rotation anchored by PD modes. Suited for float altitude or "
-                  "slow-drift windows where airtime budget is relaxed.",
+BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS = {
+    "mono":             "Monochrome status updates only. Best when you need the highest update frequency.",
+    "rapid":            "Fast color plus status framing. Good balance of image cadence and color detail.",
+    "standard":         "Balanced quality and frequency (default). Recommended for general operation.",
+    "quality":          "Quality-focused color imaging. Use when you want stronger image detail without "
+                        "committing to maximum-resolution cadence.",
+    "high-res":         "Maximum detail imaging. Use when high-resolution frames are prioritized over "
+                        "update rate.",
+    "native-rapid":     "Native-only rapid imaging (bw24 + r36). Use when MMSSTV is unavailable and "
+                        "frequent updates are required.",
+    "native-balanced":  "Native-only balanced imaging (r36 + m2 + s2). Good default when you want "
+                        "color quality without MMSSTV library dependence.",
+    "native-detail":    "Native-only higher-detail imaging (r72 + m1 + s1). Use when prioritizing "
+                        "native image detail over cadence.",
 }
+BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES = {
+    name: None for name in BUILTIN_TRANSMIT_SCHEDULE_PROFILES
+}
+SCHEDULE_PROFILE_SECTION_PREFIX = "schedule_profile "
+GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK = "r36"
+
+# Mutable working copies — extended at config-load time with custom profiles.
+TRANSMIT_SCHEDULE_PROFILES = {
+    name: tuple(modes) for name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items()
+}
+TRANSMIT_SCHEDULE_DESCRIPTIONS = dict(BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS)
+TRANSMIT_SCHEDULE_FALLBACK_MODES = dict(BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES)
 
 TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(
     TRANSMIT_SCHEDULE_PROFILE,
-    TRANSMIT_SCHEDULE_PROFILES["hab_cruise"],
+    TRANSMIT_SCHEDULE_PROFILES["standard"],
 )
+
+
+def _reset_schedule_profile_registry() -> None:
+    """Restore TRANSMIT_SCHEDULE_PROFILES/DESCRIPTIONS/FALLBACK_MODES to built-in defaults."""
+    global TRANSMIT_SCHEDULE_PROFILES, TRANSMIT_SCHEDULE_DESCRIPTIONS, TRANSMIT_SCHEDULE_FALLBACK_MODES
+    TRANSMIT_SCHEDULE_PROFILES = {
+        name: tuple(modes) for name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items()
+    }
+    TRANSMIT_SCHEDULE_DESCRIPTIONS = dict(BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS)
+    TRANSMIT_SCHEDULE_FALLBACK_MODES = dict(BUILTIN_TRANSMIT_SCHEDULE_FALLBACK_MODES)
+
+
+def _normalize_schedule_profile_name(profile_name: Optional[str]) -> Optional[str]:
+    if profile_name is None:
+        return None
+    normalized = profile_name.strip().lower()
+    return normalized or None
+
+
+def _validate_schedule_profiles(strict_defined_modes: bool = True) -> None:
+    invalid_by_profile = {}
+    for profile_name, modes in TRANSMIT_SCHEDULE_PROFILES.items():
+        invalid_modes: List[str] = []
+        for mode_name in modes:
+            normalized_mode = _normalize_schedule_mode_name(mode_name)
+            if not normalized_mode or not _is_valid_schedule_mode_token(normalized_mode):
+                invalid_modes.append(mode_name)
+                continue
+            if strict_defined_modes and normalized_mode not in MODE_PROFILES:
+                invalid_modes.append(mode_name)
+        if invalid_modes:
+            invalid_by_profile[profile_name] = invalid_modes
+    if invalid_by_profile:
+        details = "; ".join(
+            f"{pn}: {', '.join(im)}"
+            for pn, im in sorted(invalid_by_profile.items())
+        )
+        label = "undefined or invalid" if strict_defined_modes else "invalid"
+        raise RuntimeError(f"Schedule profile contains {label} mode(s): {details}")
+
+
+_validate_schedule_profiles()
+
+
+def get_effective_schedule_fallback_mode(profile_name: Optional[str] = None) -> Optional[str]:
+    """Return the most specific unavailable-mode fallback for a schedule profile."""
+    normalized = _normalize_schedule_profile_name(profile_name)
+    profile_fallback = None
+    if normalized is not None:
+        profile_fallback = TRANSMIT_SCHEDULE_FALLBACK_MODES.get(normalized)
+    return _normalize_schedule_mode_name(profile_fallback or GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+
+
+def describe_schedule_fallback_policy(profile_name: Optional[str] = None) -> str:
+    normalized = _normalize_schedule_profile_name(profile_name)
+    profile_fallback = None
+    if normalized is not None:
+        profile_fallback = _normalize_schedule_mode_name(
+            TRANSMIT_SCHEDULE_FALLBACK_MODES.get(normalized)
+        )
+    global_fallback = _normalize_schedule_mode_name(GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+    if profile_fallback:
+        return f"profile={profile_fallback}  global={global_fallback or '-'}"
+    return f"profile=<inherit>  global={global_fallback or '-'}"
+
+
+def find_default_config() -> Optional[str]:
+    """Return the first pi_sstv.cfg found in CONFIG_SEARCH_PATHS, or None."""
+    for candidate in CONFIG_SEARCH_PATHS:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
 
 
 def generate_default_config(path: str):
     """Write a fully-commented default configuration file to *path*."""
-    schedules = ", ".join(TRANSMIT_SCHEDULE_PROFILES.keys())
+    builtin_schedule_lines: List[str] = []
+    for schedule_name, modes in BUILTIN_TRANSMIT_SCHEDULE_PROFILES.items():
+        description = BUILTIN_TRANSMIT_SCHEDULE_DESCRIPTIONS.get(schedule_name, "")
+        default_marker = " (default)" if schedule_name == TRANSMIT_SCHEDULE_PROFILE else ""
+        summary = f"{description}{default_marker}".strip()
+        builtin_schedule_lines.append(f"#   {schedule_name:<16} - {summary}")
+        builtin_schedule_lines.append(f"#                      -> {' -> '.join(modes)}")
+    builtin_schedule_block = "\n".join(builtin_schedule_lines)
     content = f"""\
 # =============================================================================
 # pi_sstv.cfg  —  HamWing SSTV HAB payload controller configuration
@@ -381,13 +621,20 @@ def generate_default_config(path: str):
 # For --explain reference: python3 pi_sstv.py --explain schedule
 [mission]
 
+# Set to false to disable mission execution.  The script (and systemd service)
+# will start, log a notice, and exit cleanly without capturing or transmitting.
+enabled = true
+
 # Transmit schedule preset.  Controls which SSTV modes are used in rotation.
-# Available presets: {schedules}
-#   hab_climb  - Mono-heavy maximum update rate; for the steepest climb phase.
-#   hab_rapid  - Fast color bursts; best for upper ascent and release.
-#   hab_cruise - Balanced default; works across the full flight envelope.
-#   hab_float  - Quality-first PD modes; suited for float altitude / science windows.
+# Built-in presets:
+{builtin_schedule_block}
+# Additional custom presets can be defined with [schedule_profile <name>] sections.
+# CLI note: --schedule NAME overrides this value after the config file is loaded.
 schedule = {TRANSMIT_SCHEDULE_PROFILE}
+
+# Global default mode used when a scheduled mode is unavailable and its own
+# fallback chain is exhausted.
+# unavailable_mode_fallback = {GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK}
 
 # Total number of image captures before the mission ends.
 total = {PIC_TOTAL}
@@ -406,6 +653,57 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 # Skip all radio transmission.  Images are captured and encoded but never
 # played back.  Useful for bench testing without a radio connected.
 # no_tx = false
+
+
+# -----------------------------------------------------------------------------
+# [test_panels]  Dedicated test-image transmit workflow (--test-panels)
+# -----------------------------------------------------------------------------
+# Transmits a static image file (or images from a folder) instead of live
+# captures.  Only active when the --test-panels verb is used.  All values are
+# optional; defaults are shown.
+[test_panels]
+
+# Path to a single image file or a directory containing images.
+# Required when --test-panels is invoked.
+# source =
+
+# How to pick images when source is a directory.
+#   sequential  - In lexicographic order (default).
+#   random      - Randomly sampled with replacement.
+# selection = sequential
+
+# How many images to transmit (ignored when source is a single file).
+# count = 1
+
+# SSTV mode to use for test-panel transmissions.
+# mode = pd50
+
+# Overlay behaviour during test-panel transmissions.
+# include_callsign_overlay = true
+# include_timestamp_overlay = false
+
+# Set to true only if you are running the test without a callsign configured.
+# The default (false) is the FCC Part 97-compliant guardrail.
+# allow_tx_without_callsign = false
+
+
+# -----------------------------------------------------------------------------
+# [schedule_profile custom]  Optional operator-defined schedule profile
+# -----------------------------------------------------------------------------
+# Any section named [schedule_profile <name>] becomes a selectable preset.
+# Profile names are normalized to lowercase when loaded.
+# The modes value may use commas, whitespace, or both as separators.
+# Mode tokens are validated when the config loads; actual encoder availability
+# is resolved later at runtime after SlowFrame mode discovery.
+#
+# Activate with:  schedule = custom  (in [mission] above)
+# Or override from the CLI:  python3 pi_sstv.py --config pi_sstv.cfg --schedule custom
+#
+# Full example with optional per-profile fallback override:
+# [schedule_profile custom]
+# modes = robot12bw, r36, pd50, pd90
+# description = Operator-defined mixed cadence profile.
+# unavailable_mode_fallback = m2
 
 
 # -----------------------------------------------------------------------------
@@ -526,6 +824,38 @@ callsign_position = {SLOWFRAME_CALLSIGN_OVERLAY_POSITION}
 callsign_color = {SLOWFRAME_CALLSIGN_OVERLAY_COLOR}
 callsign_background_color = {SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR}
 
+# Optional free-form text to replace the entire overlay on every image.
+# When set, both timestamp and callsign overlays are suppressed in favour of
+# this string.  Leave blank (or omit) to use the auto-generated overlay text.
+# custom_text =
+
+
+# -----------------------------------------------------------------------------
+# [gps]  GPS overlay — altitude and Maidenhead grid square
+# -----------------------------------------------------------------------------
+# When enable_overlay is true, each image will have a second line appended to
+# the existing overlay showing the current altitude and 8-character Maidenhead
+# grid square locator read from the GPS UART at encode time.  Example:
+#   EN72ab12  1234m
+#
+# Requires the pyserial package:  pip3 install pyserial
+# The script waits up to overlay_timeout seconds for a valid GGA sentence.
+# If no fix is received in that window the GPS line is omitted silently.
+[gps]
+
+# Set to true to append altitude + Maidenhead grid square to the image overlay.
+enable_overlay = {'true' if GPS_ENABLE_OVERLAY else 'false'}
+
+# Maximum seconds to wait for a GPS fix before giving up and skipping the GPS line.
+overlay_timeout = {GPS_OVERLAY_TIMEOUT}
+
+# Serial port connected to the GPS module.
+# Pi Zero: /dev/ttyS0   Pi 3/4/5 (hardware UART): /dev/ttyAMA0
+serial_port = {GPS_SERIAL_PORT}
+
+# GPS baud rate.  Most common u-blox/MTK modules default to 9600.
+serial_baud = {GPS_SERIAL_BAUD}
+
 
 # -----------------------------------------------------------------------------
 # [mmsstv]  MMSSTV encoder library
@@ -569,6 +899,194 @@ quiet_log_file =
     print("Edit the file, then load it with:  python3 pi_sstv.py --config " + path)
 
 
+# Sentinels populated by apply_env_overrides() for settings that are normally
+# only reachable as CLI flags (debug, no-tx, log-file).  Verb dispatchers check
+# these as fallbacks so the env vars still take effect even without a flag.
+_ENV_DEBUG: bool = False
+_ENV_NO_TX: bool = False
+_ENV_LOG_FILE: str = None
+
+
+def apply_env_overrides():
+    """Apply environment variables as a configuration layer between hardcoded
+    defaults and a config file.
+
+    Precedence (lowest → highest):
+        hardcoded defaults  →  env vars (this function)
+        →  config file (load_config)  →  CLI flags
+
+    Supported variables
+    -------------------
+    Runtime behaviour
+      PI_SSTV_SLOWFRAME_BIN               Path to the slowframe binary
+      PI_SSTV_DEBUG                       Enable DEBUG-level logging: true | false
+      PI_SSTV_NO_TX                       Skip all radio TX (dry-run mode): true | false
+      PI_SSTV_LOG_FILE                    Append logs to this file path (in addition to stdout)
+
+    Mission
+      PI_SSTV_SCHEDULE                    Transmit schedule preset name
+      PI_SSTV_TOTAL_CAPTURES              Total captures before the mission ends (int)
+      PI_SSTV_CAPTURE_INTERVAL            Seconds between captures (float)
+      PI_SSTV_MIN_CAPTURES_BETWEEN_TX     Minimum captures required between any two TX (int)
+
+    Radio
+      PI_SSTV_BAND                        Radio band: vhf | uhf | both
+      PI_SSTV_TX_POWER                    Transmit power: low | high
+      PI_SSTV_PD_IDLE_MODE                PD pin idle behaviour: release | sleep
+      PI_SSTV_MAX_DUTY_CYCLE              Max rolling TX fraction 0.0-1.0 (float)
+      PI_SSTV_COOLDOWN_SCALE              Cooldown scale factor (float, default 1.0)
+      PI_SSTV_DUTY_CYCLE_WINDOW           Rolling window in seconds (int)
+      PI_SSTV_WAKE_DELAY                  Radio wake delay in seconds (float)
+      PI_SSTV_PTT_DELAY                   PTT key delay in seconds (float)
+      PI_SSTV_POST_PLAYBACK_DELAY         Post-playback delay in seconds (float)
+
+    Capture
+      PI_SSTV_CAPTURE_QUALITY             JPEG quality 1-100 (int)
+      PI_SSTV_CAPTURE_METERING            rpicam metering mode: matrix | average | spot
+      PI_SSTV_CAPTURE_EXPOSURE            rpicam exposure mode: sport | normal | long
+      PI_SSTV_CAPTURE_AWB                 rpicam AWB mode: auto | daylight | cloudy | ...
+
+    Encode
+      PI_SSTV_AUDIO_FORMAT                Output format: wav | aiff | ogg
+      PI_SSTV_SAMPLE_RATE                 Audio sample rate in Hz (int)
+      PI_SSTV_ASPECT_MODE                 Image aspect handling: center | pad | stretch
+
+    Overlay
+      STATION_CALLSIGN                    Station callsign; also enables callsign overlay
+      SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY  Show timestamp on image: true | false
+      SLOWFRAME_TIMESTAMP_OVERLAY_SIZE    Timestamp font size (int, default 11)
+      SLOWFRAME_TIMESTAMP_OVERLAY_POSITION
+                                          Overlay anchor (default top-left)
+      SLOWFRAME_TIMESTAMP_OVERLAY_COLOR   Text colour (default white)
+      SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR
+                                          Background colour (default black)
+      SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY
+                                          Background opacity 0-100 (int, default 70)
+      SLOWFRAME_ENABLE_CALLSIGN_OVERLAY   Show callsign on image: true | false
+      SLOWFRAME_CALLSIGN_OVERLAY_SIZE     Callsign font size (int, default 13)
+      SLOWFRAME_CALLSIGN_OVERLAY_POSITION Overlay anchor (default top-right)
+      SLOWFRAME_CALLSIGN_OVERLAY_COLOR    Text colour (default white)
+      SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR
+                                          Background colour (default black)
+      PI_SSTV_OVERLAY_TEXT                Override the entire overlay text on every image
+
+    Paths / audio
+      PI_SSTV_OUTPUT_DIR                  Output directory for images, WAV, and CSV
+      PI_SSTV_ALSA_DEVICE                 ALSA playback device string (e.g. plughw:CARD=...)
+    """
+    global ACTIVE_RADIO_BAND, TX_POWER_LEVEL, PD_IDLE_MODE
+    global MAX_TRANSMIT_DUTY_CYCLE, COOLDOWN_SCALE_FACTOR, ROLLING_DUTY_CYCLE_WINDOW_SECONDS
+    global RADIO_WAKE_DELAY_SECONDS, PTT_KEY_DELAY_SECONDS, POST_PLAYBACK_DELAY_SECONDS
+    global TRANSMIT_SCHEDULE_PROFILE
+    global PIC_TOTAL, PIC_INTERVAL, MIN_CAPTURES_BETWEEN_TRANSMISSIONS
+    global STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY, OVERLAY_TEXT_OVERRIDE
+    global RPICAM_QUALITY, RPICAM_METERING, RPICAM_EXPOSURE, RPICAM_AWB
+    global SLOWFRAME_AUDIO_FORMAT, SLOWFRAME_SAMPLE_RATE, SLOWFRAME_ASPECT_MODE
+    global SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY
+    global SLOWFRAME_TIMESTAMP_OVERLAY_SIZE, SLOWFRAME_TIMESTAMP_OVERLAY_POSITION
+    global SLOWFRAME_TIMESTAMP_OVERLAY_COLOR
+    global SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR, SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY
+    global SLOWFRAME_CALLSIGN_OVERLAY_SIZE, SLOWFRAME_CALLSIGN_OVERLAY_POSITION
+    global SLOWFRAME_CALLSIGN_OVERLAY_COLOR, SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR
+    global TIMESTAMPED_DIR, APLAY_DEVICE, SLOWFRAME_BIN
+    global _ENV_DEBUG, _ENV_NO_TX, _ENV_LOG_FILE
+    global GPS_ENABLE_OVERLAY, GPS_OVERLAY_TIMEOUT
+
+    def _estr(name):
+        v = os.environ.get(name, "").strip()
+        return v if v else None
+
+    def _ebool(name):
+        v = os.environ.get(name, "").strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off"):
+            return False
+        if v:
+            print(f"pi_sstv.py: env {name}={os.environ[name]!r} — not a valid boolean; ignored",
+                  file=sys.stderr)
+        return None
+
+    def _eint(name):
+        v = os.environ.get(name, "").strip()
+        if not v:
+            return None
+        try:
+            return int(v)
+        except ValueError:
+            print(f"pi_sstv.py: env {name}={v!r} — not a valid integer; ignored", file=sys.stderr)
+            return None
+
+    def _efloat(name):
+        v = os.environ.get(name, "").strip()
+        if not v:
+            return None
+        try:
+            return float(v)
+        except ValueError:
+            print(f"pi_sstv.py: env {name}={v!r} — not a valid number; ignored", file=sys.stderr)
+            return None
+
+    # --- Runtime behaviour ---
+    if (v := _estr("PI_SSTV_SLOWFRAME_BIN")) is not None:  SLOWFRAME_BIN = v
+    if (v := _ebool("PI_SSTV_DEBUG"))        is not None:  _ENV_DEBUG = v
+    if (v := _ebool("PI_SSTV_NO_TX"))        is not None:  _ENV_NO_TX = v
+    if (v := _estr("PI_SSTV_LOG_FILE"))      is not None:  _ENV_LOG_FILE = v
+
+    # --- Mission ---
+    if (v := _estr("PI_SSTV_SCHEDULE"))               is not None:  TRANSMIT_SCHEDULE_PROFILE = v
+    if (v := _eint("PI_SSTV_TOTAL_CAPTURES"))          is not None:  PIC_TOTAL = v
+    if (v := _efloat("PI_SSTV_CAPTURE_INTERVAL"))      is not None:  PIC_INTERVAL = v
+    if (v := _eint("PI_SSTV_MIN_CAPTURES_BETWEEN_TX")) is not None:  MIN_CAPTURES_BETWEEN_TRANSMISSIONS = v
+
+    # --- Radio ---
+    if (v := _estr("PI_SSTV_BAND"))              is not None:  ACTIVE_RADIO_BAND = v.lower()
+    if (v := _estr("PI_SSTV_TX_POWER"))          is not None:  TX_POWER_LEVEL = v.lower()
+    if (v := _estr("PI_SSTV_PD_IDLE_MODE"))      is not None:  PD_IDLE_MODE = v.lower()
+    if (v := _efloat("PI_SSTV_MAX_DUTY_CYCLE"))  is not None:  MAX_TRANSMIT_DUTY_CYCLE = v
+    if (v := _efloat("PI_SSTV_COOLDOWN_SCALE"))  is not None:  COOLDOWN_SCALE_FACTOR = v
+    if (v := _eint("PI_SSTV_DUTY_CYCLE_WINDOW")) is not None:  ROLLING_DUTY_CYCLE_WINDOW_SECONDS = v
+    if (v := _efloat("PI_SSTV_WAKE_DELAY"))      is not None:  RADIO_WAKE_DELAY_SECONDS = v
+    if (v := _efloat("PI_SSTV_PTT_DELAY"))       is not None:  PTT_KEY_DELAY_SECONDS = v
+    if (v := _efloat("PI_SSTV_POST_PLAYBACK_DELAY")) is not None:  POST_PLAYBACK_DELAY_SECONDS = v
+
+    # --- Capture ---
+    if (v := _eint("PI_SSTV_CAPTURE_QUALITY"))   is not None:  RPICAM_QUALITY = v
+    if (v := _estr("PI_SSTV_CAPTURE_METERING"))  is not None:  RPICAM_METERING = v.lower()
+    if (v := _estr("PI_SSTV_CAPTURE_EXPOSURE"))  is not None:  RPICAM_EXPOSURE = v.lower()
+    if (v := _estr("PI_SSTV_CAPTURE_AWB"))       is not None:  RPICAM_AWB = v.lower()
+
+    # --- Encode ---
+    if (v := _estr("PI_SSTV_AUDIO_FORMAT")) is not None:  SLOWFRAME_AUDIO_FORMAT = v.lower()
+    if (v := _eint("PI_SSTV_SAMPLE_RATE"))  is not None:  SLOWFRAME_SAMPLE_RATE = v
+    if (v := _estr("PI_SSTV_ASPECT_MODE"))  is not None:  SLOWFRAME_ASPECT_MODE = v.lower()
+
+    # --- Overlay ---
+    if (v := _ebool("SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY"))           is not None:  SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY = v
+    if (v := _eint("SLOWFRAME_TIMESTAMP_OVERLAY_SIZE"))               is not None:  SLOWFRAME_TIMESTAMP_OVERLAY_SIZE = v
+    if (v := _estr("SLOWFRAME_TIMESTAMP_OVERLAY_POSITION"))           is not None:  SLOWFRAME_TIMESTAMP_OVERLAY_POSITION = v
+    if (v := _estr("SLOWFRAME_TIMESTAMP_OVERLAY_COLOR"))              is not None:  SLOWFRAME_TIMESTAMP_OVERLAY_COLOR = v
+    if (v := _estr("SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR"))   is not None:  SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR = v
+    if (v := _eint("SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY")) is not None:  SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY = v
+    if (v := _estr("STATION_CALLSIGN")) is not None:
+        STATION_CALLSIGN = v.upper()
+        SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
+    if (v := _ebool("SLOWFRAME_ENABLE_CALLSIGN_OVERLAY"))          is not None:  SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = v
+    if (v := _eint("SLOWFRAME_CALLSIGN_OVERLAY_SIZE"))             is not None:  SLOWFRAME_CALLSIGN_OVERLAY_SIZE = v
+    if (v := _estr("SLOWFRAME_CALLSIGN_OVERLAY_POSITION"))         is not None:  SLOWFRAME_CALLSIGN_OVERLAY_POSITION = v
+    if (v := _estr("SLOWFRAME_CALLSIGN_OVERLAY_COLOR"))            is not None:  SLOWFRAME_CALLSIGN_OVERLAY_COLOR = v
+    if (v := _estr("SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR")) is not None:  SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = v
+    if (v := _estr("PI_SSTV_OVERLAY_TEXT")) is not None:  OVERLAY_TEXT_OVERRIDE = v
+
+    # --- GPS overlay ---
+    if (v := _ebool("PI_SSTV_GPS_OVERLAY"))         is not None:  GPS_ENABLE_OVERLAY   = v
+    if (v := _efloat("PI_SSTV_GPS_OVERLAY_TIMEOUT")) is not None:  GPS_OVERLAY_TIMEOUT = v
+
+    # --- Paths / audio ---
+    if (v := _estr("PI_SSTV_OUTPUT_DIR"))   is not None:  TIMESTAMPED_DIR = v
+    if (v := _estr("PI_SSTV_ALSA_DEVICE"))  is not None:  APLAY_DEVICE = v
+
+
 def load_config(path: str):
     """Read *path* and apply recognised settings to module-level globals.
 
@@ -577,8 +1095,17 @@ def load_config(path: str):
     silently ignored to allow forward-compatible config files.
     """
     global TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE
-    global PIC_TOTAL, PIC_INTERVAL, STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global TRANSMIT_SCHEDULE_PROFILES, TRANSMIT_SCHEDULE_DESCRIPTIONS, TRANSMIT_SCHEDULE_FALLBACK_MODES
+    global GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK
+    global PIC_TOTAL, PIC_INTERVAL, MISSION_ENABLED, STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global OVERLAY_TEXT_OVERRIDE
+    global TEST_PANEL_SOURCE, TEST_PANEL_SELECTION, TEST_PANEL_COUNT, TEST_PANEL_DEFAULT_MODE
+    global TEST_PANEL_INCLUDE_CALLSIGN_OVERLAY, TEST_PANEL_INCLUDE_TIMESTAMP_OVERLAY
+    global TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN
     global MIN_CAPTURES_BETWEEN_TRANSMISSIONS
+    global STATUS_LED_ENABLED, STATUS_LED_PIN, STATUS_LED_ACTIVE_HIGH
+    global STATUS_LED_PWM_FREQ, STATUS_LED_MAX_PCT
+    global ACTIVE_RADIO_BAND, TX_POWER_LEVEL, PD_IDLE_MODE
     global ROLLING_DUTY_CYCLE_WINDOW_SECONDS, MAX_TRANSMIT_DUTY_CYCLE, COOLDOWN_SCALE_FACTOR
     global RADIO_WAKE_DELAY_SECONDS, PTT_KEY_DELAY_SECONDS, POST_PLAYBACK_DELAY_SECONDS
     global RPICAM_QUALITY, RPICAM_METERING, RPICAM_EXPOSURE, RPICAM_AWB, CAPTURE_FILE_TIMEOUT
@@ -591,6 +1118,8 @@ def load_config(path: str):
     global SLOWFRAME_CALLSIGN_OVERLAY_SIZE, SLOWFRAME_CALLSIGN_OVERLAY_POSITION
     global SLOWFRAME_CALLSIGN_OVERLAY_COLOR, SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR
     global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, DATA_CSV, SSTV_WAV
+    global APLAY_DEVICE
+    global GPS_ENABLE_OVERLAY, GPS_OVERLAY_TIMEOUT, GPS_SERIAL_PORT, GPS_SERIAL_BAUD
 
     if not os.path.isfile(path):
         print(f"Config file not found: {path}", file=sys.stderr)
@@ -598,6 +1127,7 @@ def load_config(path: str):
 
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(path)
+    _reset_schedule_profile_registry()
 
     def _str(section, key, default):
         return cfg.get(section, key, fallback=default)
@@ -631,13 +1161,76 @@ def load_config(path: str):
     SSTV_WAV          = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
 
     # [mission]
-    schedule = _str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE)
+    # [schedule_profile <name>]  — load custom operator-defined presets first so
+    # they are available when [mission] schedule is validated below.
+    for section_name in cfg.sections():
+        lowered_section = section_name.lower()
+        if not lowered_section.startswith(SCHEDULE_PROFILE_SECTION_PREFIX):
+            continue
+        profile_name = _normalize_schedule_profile_name(
+            section_name[len(SCHEDULE_PROFILE_SECTION_PREFIX):]
+        )
+        if not profile_name:
+            print(
+                f"Config [{section_name}]: section name must include a profile name "
+                f"after '{SCHEDULE_PROFILE_SECTION_PREFIX}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        modes_raw = cfg.get(section_name, "modes", fallback="")
+        try:
+            parsed_modes = _parse_schedule_mode_list(
+                modes_raw, f"Config [{section_name}] modes"
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        description = cfg.get(section_name, "description", fallback="").strip()
+        if not description:
+            description = (
+                f"Operator-defined schedule loaded from config section [{section_name}]."
+            )
+        fallback_raw = cfg.get(section_name, "unavailable_mode_fallback", fallback="").strip()
+        fallback_mode = _normalize_schedule_mode_name(fallback_raw) if fallback_raw else None
+        if fallback_mode and not _is_valid_schedule_mode_token(fallback_mode):
+            print(
+                f"Config [{section_name}] unavailable_mode_fallback: "
+                f"invalid mode token '{fallback_raw}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        TRANSMIT_SCHEDULE_PROFILES[profile_name] = parsed_modes
+        TRANSMIT_SCHEDULE_DESCRIPTIONS[profile_name] = description
+        TRANSMIT_SCHEDULE_FALLBACK_MODES[profile_name] = fallback_mode
+
+    try:
+        _validate_schedule_profiles(strict_defined_modes=False)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+
+    # [mission]
+    GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK = _normalize_schedule_mode_name(
+        _str("mission", "unavailable_mode_fallback", GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK)
+    ) or GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK
+    if not _is_valid_schedule_mode_token(GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK):
+        print(
+            "Config [mission] unavailable_mode_fallback: "
+            f"invalid mode token '{GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    schedule = _normalize_schedule_profile_name(
+        _str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE)
+    )
     if schedule not in TRANSMIT_SCHEDULE_PROFILES:
         print(f"Config [mission] schedule: unknown preset '{schedule}'. "
               f"Valid: {', '.join(TRANSMIT_SCHEDULE_PROFILES)}", file=sys.stderr)
         sys.exit(1)
     TRANSMIT_SCHEDULE_PROFILE = schedule
     TRANSMIT_SCHEDULE         = TRANSMIT_SCHEDULE_PROFILES[schedule]
+    MISSION_ENABLED                      = _bool ("mission", "enabled",                          MISSION_ENABLED)
     PIC_TOTAL                        = _int  ("mission", "total",                            PIC_TOTAL)
     PIC_INTERVAL                     = _float("mission", "interval",                         PIC_INTERVAL)
     callsign                         = _str  ("mission", "callsign",                         STATION_CALLSIGN).strip()
@@ -646,7 +1239,37 @@ def load_config(path: str):
         STATION_CALLSIGN             = callsign
         SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
 
+    # [test_panels]
+    TEST_PANEL_SOURCE = _str("test_panels", "source", TEST_PANEL_SOURCE).strip()
+    panel_selection = _str("test_panels", "selection", TEST_PANEL_SELECTION).strip().lower()
+    if panel_selection not in ("sequential", "random"):
+        print("Config [test_panels] selection: invalid value. Valid: sequential, random", file=sys.stderr)
+        sys.exit(1)
+    TEST_PANEL_SELECTION = panel_selection
+    TEST_PANEL_COUNT = max(1, _int("test_panels", "count", TEST_PANEL_COUNT))
+    TEST_PANEL_DEFAULT_MODE = canonicalize_mode_name(
+        _str("test_panels", "mode", TEST_PANEL_DEFAULT_MODE).strip().lower()
+    ) or TEST_PANEL_DEFAULT_MODE
+    TEST_PANEL_INCLUDE_CALLSIGN_OVERLAY  = _bool("test_panels", "include_callsign_overlay",  TEST_PANEL_INCLUDE_CALLSIGN_OVERLAY)
+    TEST_PANEL_INCLUDE_TIMESTAMP_OVERLAY = _bool("test_panels", "include_timestamp_overlay", TEST_PANEL_INCLUDE_TIMESTAMP_OVERLAY)
+    TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN = _bool("test_panels", "allow_tx_without_callsign", TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN)
+
     # [radio]
+    band = _str("radio", "band", ACTIVE_RADIO_BAND).strip().lower()
+    if band not in ("vhf", "uhf", "both"):
+        print(f"Config [radio] band: invalid value '{band}'. Valid: vhf, uhf, both", file=sys.stderr)
+        sys.exit(1)
+    ACTIVE_RADIO_BAND                 = band
+    tx_power = _str("radio", "tx_power_level", TX_POWER_LEVEL).strip().lower()
+    if tx_power not in ("low", "high"):
+        print(f"Config [radio] tx_power_level: invalid value '{tx_power}'. Valid: low, high", file=sys.stderr)
+        sys.exit(1)
+    TX_POWER_LEVEL                    = tx_power
+    pd_idle = _str("radio", "pd_idle_mode", PD_IDLE_MODE).strip().lower()
+    if pd_idle not in ("release", "sleep"):
+        print(f"Config [radio] pd_idle_mode: invalid value '{pd_idle}'. Valid: release, sleep", file=sys.stderr)
+        sys.exit(1)
+    PD_IDLE_MODE                      = pd_idle
     ROLLING_DUTY_CYCLE_WINDOW_SECONDS = _int  ("radio", "rolling_duty_cycle_window_seconds", ROLLING_DUTY_CYCLE_WINDOW_SECONDS)
     MAX_TRANSMIT_DUTY_CYCLE           = _float("radio", "max_transmit_duty_cycle",           MAX_TRANSMIT_DUTY_CYCLE)
     COOLDOWN_SCALE_FACTOR             = _float("radio", "cooldown_scale_factor",             COOLDOWN_SCALE_FACTOR)
@@ -688,6 +1311,10 @@ def load_config(path: str):
     SLOWFRAME_CALLSIGN_OVERLAY_POSITION         = _str  ("overlay", "callsign_position",          SLOWFRAME_CALLSIGN_OVERLAY_POSITION)
     SLOWFRAME_CALLSIGN_OVERLAY_COLOR            = _str  ("overlay", "callsign_color",             SLOWFRAME_CALLSIGN_OVERLAY_COLOR)
     SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = _str  ("overlay", "callsign_background_color",  SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR)
+    OVERLAY_TEXT_OVERRIDE                       = _str  ("overlay", "custom_text",               OVERLAY_TEXT_OVERRIDE).strip()
+
+    # [alsa]
+    APLAY_DEVICE = _str("alsa", "playback", APLAY_DEVICE)
 
     # [mmsstv]
     lib_path = _str("mmsstv", "lib_path", "").strip()
@@ -695,6 +1322,19 @@ def load_config(path: str):
         os.environ[MMSSTV_LIBRARY_ENV_VAR] = lib_path
     if _bool("mmsstv", "disable", False):
         os.environ[MMSSTV_DISABLE_ENV_VAR] = "1"
+
+    # [gps]
+    GPS_ENABLE_OVERLAY  = _bool  ("gps", "enable_overlay",  GPS_ENABLE_OVERLAY)
+    GPS_OVERLAY_TIMEOUT = _float ("gps", "overlay_timeout", GPS_OVERLAY_TIMEOUT)
+    GPS_SERIAL_PORT     = _str   ("gps", "serial_port",     GPS_SERIAL_PORT)
+    GPS_SERIAL_BAUD     = _int   ("gps", "serial_baud",     GPS_SERIAL_BAUD)
+
+    # [status_led]
+    STATUS_LED_ENABLED     = _bool("status_led", "enabled",     STATUS_LED_ENABLED)
+    STATUS_LED_PIN         = _int ("status_led", "pin",         STATUS_LED_PIN)
+    STATUS_LED_ACTIVE_HIGH = _bool("status_led", "active_high", STATUS_LED_ACTIVE_HIGH)
+    STATUS_LED_PWM_FREQ    = _int ("status_led", "pwm_freq",    STATUS_LED_PWM_FREQ)
+    STATUS_LED_MAX_PCT     = _int ("status_led", "max_pct",     STATUS_LED_MAX_PCT)
 
     # [logging] — debug/log_file/quiet_log_file are handled by CLI args only;
     # reading them here would require reconfiguring the logging system after
@@ -731,10 +1371,16 @@ def log_section(title: str, width: int = 56):
 
 
 # ---------------------------------------------------------------------------
-# Contextual help topics  (--explain TOPIC)
+# Contextual help topics  — DEPRECATED
+# All topics have been moved to VERB_HELP_SUBJECTS (dispatched via
+# 'help <topic>' and --explain).  HELP_TOPICS is dead code; retained
+# temporarily until the full block is removed in a follow-up clean-up pass.
 # ---------------------------------------------------------------------------
 
 HELP_TOPICS = {
+    # capture, encode, overlay, mmsstv, gpio, tx, logging have been moved to
+    # VERB_HELP_SUBJECTS and are dispatched via 'help <topic>' / --explain.
+    # modes and schedule remain here pending content reconciliation.
     "capture": """\
 TOPIC: capture
 ==============
@@ -1159,7 +1805,7 @@ Controls the radio transmission step: GPIO sequencing, audio playback,
 and timing constants for the DRA818 module on the HamWing carrier board.
 
 GPIO pin assignments (BCM numbering):
-  DRA818_PTT_PIN         = {ptt}   (physical pin 13)
+  DRA818_VHF_PTT_PIN     = {ptt}   (physical pin 13)
   DRA818_POWER_DOWN_PIN  = {pd}    (physical pin 7)
   DRA818_POWER_LEVEL_PIN = {hl}   (physical pin 15)
   Audio PWM output pins  = GPIO{al} (left) / GPIO{ar} (right)
@@ -1356,61 +2002,33 @@ SEE ALSO
 """,
 }
 
-HELP_TOPIC_ALIASES = {
-    "cam":      "capture",
-    "camera":   "capture",
-    "image":    "capture",
-    "audio":    "encode",
-    "encoding": "encode",
-    "wav":      "encode",
-    "text":     "overlay",
-    "callsign": "overlay",
-    "timestamp":"overlay",
-    "lib":      "mmsstv",
-    "library":  "mmsstv",
-    "mode":     "modes",
-    "radio":    "tx",
-    "transmit": "tx",
-    "ptt":      "tx",
-    "pins":     "gpio",
-    "wiring":   "gpio",
-    "log":      "logging",
-    "debug":    "logging",
-    "duty":     "schedule",
-    "cooldown": "schedule",
-}
+HELP_TOPIC_ALIASES = {}
 
 
 def print_explain(topic: str):
-    canonical = HELP_TOPIC_ALIASES.get(topic.lower(), topic.lower())
-    text = HELP_TOPICS.get(canonical)
-    if text is None:
-        valid = sorted(set(HELP_TOPICS.keys()) | set(HELP_TOPIC_ALIASES.keys()))
-        print(f"Unknown topic: '{topic}'")
-        print(f"Available topics: {', '.join(valid)}")
-        sys.exit(1)
-    # Substitute live script constants into topics that reference them.
-    text = text.format(
-        metering=RPICAM_METERING,
-        exposure=RPICAM_EXPOSURE,
-        awb=RPICAM_AWB,
-        quality=RPICAM_QUALITY,
-        min_captures=MIN_CAPTURES_BETWEEN_TRANSMISSIONS,
-        cooldown_scale=COOLDOWN_SCALE_FACTOR,
-        window=ROLLING_DUTY_CYCLE_WINDOW_SECONDS,
-        duty_pct=int(MAX_TRANSMIT_DUTY_CYCLE * 100),
-        duty_pct_raw=MAX_TRANSMIT_DUTY_CYCLE,
-        budget=int(ROLLING_DUTY_CYCLE_WINDOW_SECONDS * MAX_TRANSMIT_DUTY_CYCLE),
-        ptt=DRA818_PTT_PIN,
-        pd=DRA818_POWER_DOWN_PIN,
-        hl=DRA818_POWER_LEVEL_PIN,
-        al=AUDIO_LEFT_PWM_PIN,
-        ar=AUDIO_RIGHT_PWM_PIN,
-        wake=RADIO_WAKE_DELAY_SECONDS,
-        ptt_delay=PTT_KEY_DELAY_SECONDS,
-        post=POST_PLAYBACK_DELAY_SECONDS,
-    )
-    print(text)
+    """Delegate --explain TOPIC to the unified help dispatch."""
+    _dispatch_help([topic])
+
+
+class _HelpRedirectParser(argparse.ArgumentParser):
+    """ArgumentParser that redirects any parse error to 'help' verb output."""
+
+    def error(self, message):
+        print(f"pi_sstv.py: {message}\n")
+        _dispatch_help([])
+        sys.exit(2)
+
+
+def _verb_parser(verb: str, **kwargs) -> argparse.ArgumentParser:
+    """Return an ArgumentParser whose error() shows the verb's own help entry."""
+
+    class _VerbParser(argparse.ArgumentParser):
+        def error(self, message):
+            print(f"pi_sstv.py {verb}: {message}\n")
+            _dispatch_help([verb])
+            sys.exit(2)
+
+    return _VerbParser(**kwargs)
 
 
 def parse_args():
@@ -1496,11 +2114,12 @@ def parse_args():
         "    python3 pi_sstv.py --config pi_sstv.cfg --schedule hab_rapid --callsign W1AW-11\n"
     )
 
-    parser = argparse.ArgumentParser(
+    parser = _HelpRedirectParser(
         prog="pi_sstv.py",
         description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=epilog,
+        add_help=False,
     )
 
     # --- Pipeline mode flags ---
@@ -1759,7 +2378,8 @@ def parse_args():
         help=(
             "Load pipeline settings from PATH before applying any CLI overrides. "
             "Use --generate-config to create a fully-documented template. "
-            f"Default search path (if not specified): {DEFAULT_CONFIG_PATH}"
+            "Auto-search order (if not specified): "
+            ". → ~/.pi_sstv/ → /etc/ → " + DEFAULT_CONFIG_PATH
         ),
     )
     cfg_group.add_argument(
@@ -1831,10 +2451,13 @@ def list_modes():
 def list_schedules():
     WIDE  = "═" * 66
     THIN  = "─" * 66
+    builtin_names = set(BUILTIN_TRANSMIT_SCHEDULE_PROFILES.keys())
     print("Schedule presets\n")
     for preset_name, modes in TRANSMIT_SCHEDULE_PROFILES.items():
         is_active    = preset_name == TRANSMIT_SCHEDULE_PROFILE
+        is_custom    = preset_name not in builtin_names
         active_tag   = "  ◀ active" if is_active else ""
+        custom_tag   = "  [custom]" if is_custom else ""
         description  = TRANSMIT_SCHEDULE_DESCRIPTIONS.get(preset_name, "")
         profiles     = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
 
@@ -1854,7 +2477,7 @@ def list_schedules():
 
         # ── header ────────────────────────────────────────────────────────────
         print(f"  {WIDE}")
-        print(f"  {preset_name.upper()}{active_tag}")
+        print(f"  {preset_name.upper()}{active_tag}{custom_tag}")
         if description:
             # wrap description to ~62 chars
             words, line = description.split(), ""
@@ -1866,6 +2489,8 @@ def list_schedules():
                     line = (line + " " + w).lstrip()
             if line:
                 print(f"  {line}")
+        fb_policy = describe_schedule_fallback_policy(preset_name)
+        print(f"  Fallback policy: {fb_policy}")
         print(f"  {THIN}")
 
         # ── step table ────────────────────────────────────────────────────────
@@ -2142,7 +2767,8 @@ def _scaled_overlay_size(image_width: int, base_size: int) -> int:
     return max(8, round(base_size * image_width / 320))
 
 
-def build_slowframe_command(input_path, output_path, timestamp_message, mode_name):
+def build_slowframe_command(input_path, output_path, timestamp_message, mode_name,
+                            gps_overlay_text: Optional[str] = None):
     command = [
         SLOWFRAME_BIN,
         "-i", input_path,
@@ -2157,7 +2783,27 @@ def build_slowframe_command(input_path, output_path, timestamp_message, mode_nam
         command.append("-v")
 
     mode_width = MODE_PROFILES[mode_name].image_width if mode_name in MODE_PROFILES else 320
-    if SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY:
+
+    def _append_gps(base_text: str) -> str:
+        """Append GPS text as a second line when available."""
+        if gps_overlay_text:
+            return f"{base_text}\n{gps_overlay_text}"
+        return base_text
+
+    if OVERLAY_TEXT_OVERRIDE:
+        # Operator-supplied free-form text replaces all auto-generated overlay content.
+        command.extend([
+            "-T",
+            build_text_overlay(
+                text=_append_gps(OVERLAY_TEXT_OVERRIDE),
+                size=_scaled_overlay_size(mode_width, SLOWFRAME_TIMESTAMP_OVERLAY_SIZE),
+                position=SLOWFRAME_TIMESTAMP_OVERLAY_POSITION,
+                color=SLOWFRAME_TIMESTAMP_OVERLAY_COLOR,
+                background_color=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR,
+                background_opacity=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY,
+            ),
+        ])
+    elif SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY:
         # When a callsign overlay is also enabled, merge it into the timestamp overlay
         # as a prefix.  SlowFrame renders all -T overlays at the same position
         # regardless of the pos= value on secondary overlays, so separate overlay
@@ -2169,7 +2815,7 @@ def build_slowframe_command(input_path, output_path, timestamp_message, mode_nam
         command.extend([
             "-T",
             build_text_overlay(
-                text=overlay_text,
+                text=_append_gps(overlay_text),
                 size=_scaled_overlay_size(mode_width, SLOWFRAME_TIMESTAMP_OVERLAY_SIZE),
                 position=SLOWFRAME_TIMESTAMP_OVERLAY_POSITION,
                 color=SLOWFRAME_TIMESTAMP_OVERLAY_COLOR,
@@ -2182,25 +2828,90 @@ def build_slowframe_command(input_path, output_path, timestamp_message, mode_nam
         command.extend([
             "-T",
             build_text_overlay(
-                text=STATION_CALLSIGN,
+                text=_append_gps(STATION_CALLSIGN),
                 size=_scaled_overlay_size(mode_width, SLOWFRAME_CALLSIGN_OVERLAY_SIZE),
                 position=SLOWFRAME_CALLSIGN_OVERLAY_POSITION,
                 color=SLOWFRAME_CALLSIGN_OVERLAY_COLOR,
                 background_color=SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR,
             ),
         ])
+    elif gps_overlay_text:
+        # All other overlays disabled but GPS overlay is on — emit GPS text alone.
+        command.extend([
+            "-T",
+            build_text_overlay(
+                text=gps_overlay_text,
+                size=_scaled_overlay_size(mode_width, SLOWFRAME_TIMESTAMP_OVERLAY_SIZE),
+                position=SLOWFRAME_TIMESTAMP_OVERLAY_POSITION,
+                color=SLOWFRAME_TIMESTAMP_OVERLAY_COLOR,
+                background_color=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR,
+                background_opacity=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY,
+            ),
+        ])
 
     return command
 
 
+def get_active_ptt_pins() -> List[int]:
+    """Return the PTT GPIO pin(s) for the selected radio band."""
+    if ACTIVE_RADIO_BAND == "uhf":
+        return [DRA818_UHF_PTT_PIN]
+    elif ACTIVE_RADIO_BAND == "both":
+        return [DRA818_VHF_PTT_PIN, DRA818_UHF_PTT_PIN]
+    else:  # "vhf" (default)
+        return [DRA818_VHF_PTT_PIN]
+
+
+def apply_tx_power_level() -> None:
+    """Apply configured DRA818 H/L output level."""
+    if TX_POWER_LEVEL == "high":
+        GPIO.output(DRA818_POWER_LEVEL_PIN, GPIO.HIGH)
+        log_debug(f"TX power level: HL GPIO{DRA818_POWER_LEVEL_PIN}=HIGH (H / 1.0 W)")
+    else:
+        GPIO.output(DRA818_POWER_LEVEL_PIN, GPIO.LOW)
+        log_debug(f"TX power level: HL GPIO{DRA818_POWER_LEVEL_PIN}=LOW (L / 0.5 W)")
+
+
+def apply_pd_idle_policy() -> None:
+    """Apply configured PD idle behavior after TX/PTT completes."""
+    if PD_IDLE_MODE == "sleep":
+        GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.LOW)
+        log_debug("PD idle policy: OUTPUT LOW (Pi-enforced sleep)")
+    else:
+        GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.IN)
+        log_debug("PD idle policy: INPUT (released to Feather M0)")
+
+
 def setup_gpio():
-    log_debug(f"GPIO setup: mode=BCM, PTT={DRA818_PTT_PIN}, PD={DRA818_POWER_DOWN_PIN}, HL={DRA818_POWER_LEVEL_PIN}")
-    GPIO.cleanup()                                                 # clear any stale state from a previous run
+    log_debug(f"GPIO setup: mode=BCM, VHF_PTT={DRA818_VHF_PTT_PIN}, UHF_PTT={DRA818_UHF_PTT_PIN}, PD={DRA818_POWER_DOWN_PIN}, HL={DRA818_POWER_LEVEL_PIN}")
+    GPIO.cleanup()                                                          # clear any stale state from a previous run
     GPIO.setmode(GPIO_PIN_MODE)
-    GPIO.setup(DRA818_PTT_PIN, GPIO.OUT, initial=GPIO.HIGH)       # PTT idle = HIGH (unkeyed)
-    GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW) # HL LOW = low power
-    GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.LOW)  # PD LOW = radio off
-    log_debug("GPIO setup complete: PTT=HIGH(idle), HL=LOW(low-power), PD=LOW(off)")
+    # Keep both PTT lines as INPUT with PUD_UP at idle so the Feather M0 can
+    # safely drive them too.  Pi claims ownership (OUTPUT HIGH) only when about
+    # to TX via claim_ptt_line(), and releases back to INPUT PUD_UP via
+    # release_ptt_line() when done.
+    GPIO.setup(DRA818_VHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)  # VHF PTT — released
+    GPIO.setup(DRA818_UHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)  # UHF PTT — released
+    GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW)         # HL — apply_tx_power_level sets final level
+    GPIO.setup(DRA818_POWER_DOWN_PIN,  GPIO.IN)                            # PD — apply_pd_idle_policy sets final state
+    apply_tx_power_level()
+    apply_pd_idle_policy()
+    log_debug(
+        "GPIO setup complete: "
+        f"VHF_PTT=INPUT_PULLUP, UHF_PTT=INPUT_PULLUP, HL={TX_POWER_LEVEL.upper()}, PD_IDLE={PD_IDLE_MODE.upper()}"
+    )
+
+
+def claim_ptt_line(pin: int = DRA818_VHF_PTT_PIN):
+    """Claim a PTT line: configure as OUTPUT HIGH (Pi owns, radio unkeyed)."""
+    GPIO.setup(pin, GPIO.OUT, initial=GPIO.HIGH)
+    log_debug(f"PTT GPIO{pin}: claimed OUTPUT HIGH (idle)")
+
+
+def release_ptt_line(pin: int = DRA818_VHF_PTT_PIN):
+    """Release a PTT line back to INPUT PUD_UP (shared with Feather M0)."""
+    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    log_debug(f"PTT GPIO{pin}: released INPUT PUD_UP")
 
 
 def capture_image(output_path):
@@ -2257,12 +2968,26 @@ def generate_sstv_audio(image_path, timestamp_message, mode_name, wav_path=None)
     else:
         overlay_desc = "none"
 
+    # Fetch GPS fix and build overlay line: "EN72ab12  1234m"
+    gps_overlay_text: Optional[str] = None
+    if GPS_ENABLE_OVERLAY:
+        fix = read_gps_fix()
+        if fix is not None:
+            lat, lon, alt_m = fix
+            grid = _maidenhead(lat, lon, precision=4)
+            alt_str = f"{int(round(alt_m))}m" if alt_m is not None else "?"
+            gps_overlay_text = f"{grid}  {alt_str}"
+            log(f"Encode: gps={gps_overlay_text}")
+        else:
+            log(f"Encode: gps=no fix (waited {GPS_OVERLAY_TIMEOUT}s)")
+
     log(f"Encode: mode={mode_name}  image={mode_width}px wide  ~{expected_duration}s TX")
     log(f"Encode: format={SLOWFRAME_AUDIO_FORMAT}  rate={SLOWFRAME_SAMPLE_RATE}Hz  aspect={SLOWFRAME_ASPECT_MODE}")
     log(f"Encode: overlay={overlay_desc}")
     log(f"Encode: output -> {output}")
 
-    cmd = build_slowframe_command(image_path, output, timestamp_message, mode_name)
+    cmd = build_slowframe_command(image_path, output, timestamp_message, mode_name,
+                                  gps_overlay_text=gps_overlay_text)
     log_debug(f"SlowFrame command: {' '.join(cmd)}")
     run(cmd, check=True)
     size = os.path.getsize(output)
@@ -2270,26 +2995,38 @@ def generate_sstv_audio(image_path, timestamp_message, mode_name, wav_path=None)
     time.sleep(SSTV_CONVERSION_SETTLE_SECONDS)
 
 
-def transmit_sstv_audio(wav_path=None):
+def transmit_sstv_audio(wav_path=None, ptt_pin: int = None):
     audio_path = wav_path or SSTV_WAV
+    ptt_pins = [ptt_pin] if ptt_pin is not None else get_active_ptt_pins()
     log(f"TX: file={audio_path}")
+    log(f"TX: device={APLAY_DEVICE}  band={ACTIVE_RADIO_BAND.upper()}  pins={ptt_pins}")
     log(f"TX: wake_delay={RADIO_WAKE_DELAY_SECONDS}s  ptt_key_delay={PTT_KEY_DELAY_SECONDS}s  post_playback_delay={POST_PLAYBACK_DELAY_SECONDS}s")
-    log("TX: PD -> HIGH (radio wake)")
+    log("TX: PD -> OUTPUT HIGH (Pi claims line, radio wake)")
     transmit_started_at = time.monotonic()
-    GPIO.output(DRA818_POWER_DOWN_PIN, GPIO.HIGH)
+    apply_tx_power_level()
+    GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.HIGH)  # claim PD from Feather M0
     time.sleep(RADIO_WAKE_DELAY_SECONDS)
-    log("TX: PTT -> LOW (keyed)")
-    GPIO.output(DRA818_PTT_PIN, GPIO.LOW)
+    for pin in ptt_pins:
+        claim_ptt_line(pin)
+    log(f"TX: PTT -> LOW (keyed, pins {ptt_pins})")
+    for pin in ptt_pins:
+        GPIO.output(pin, GPIO.LOW)
     time.sleep(PTT_KEY_DELAY_SECONDS)
 
     try:
-        run(["aplay", audio_path], check=True)
+        run(["aplay", "-D", APLAY_DEVICE, audio_path], check=True)
     finally:
         time.sleep(POST_PLAYBACK_DELAY_SECONDS)
-        log("TX: PTT -> HIGH (unkeyed)")
-        GPIO.output(DRA818_PTT_PIN, GPIO.HIGH)
-        log("TX: PD -> LOW (radio off)")
-        GPIO.output(DRA818_POWER_DOWN_PIN, GPIO.LOW)
+        log(f"TX: PTT -> HIGH (unkeyed, pins {ptt_pins})")
+        for pin in ptt_pins:
+            GPIO.output(pin, GPIO.HIGH)
+        for pin in ptt_pins:
+            release_ptt_line(pin)
+        if PD_IDLE_MODE == "sleep":
+            log("TX: PD -> LOW (idle sleep mode)")
+        else:
+            log("TX: PD -> INPUT (released back to Feather M0)")
+        apply_pd_idle_policy()
 
     elapsed = time.monotonic() - transmit_started_at
     log(f"TX: complete  {elapsed:.1f}s elapsed")
@@ -2298,25 +3035,715 @@ def transmit_sstv_audio(wav_path=None):
 
 def run_ptt_test(key_seconds: float):
     """Key the radio briefly to verify GPIO PD/PTT control path."""
-    log(f"PTT test: starting (key duration {key_seconds:.2f}s)")
+    ptt_pins = get_active_ptt_pins()
+    band_label = ACTIVE_RADIO_BAND.upper()
+    log(f"PTT test: starting (band={band_label}  pins={ptt_pins}  duration={key_seconds:.2f}s)")
     started_at = time.monotonic()
 
     # Bring radio out of power-down and then key PTT.
-    GPIO.output(DRA818_POWER_DOWN_PIN, GPIO.HIGH)
-    log_debug("PTT test: PD->HIGH (radio wake)")
+    apply_tx_power_level()
+    GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.HIGH)  # claim PD from Feather M0
+    log_debug("PTT test: PD->OUTPUT HIGH (Pi claims line, radio wake)")
     time.sleep(RADIO_WAKE_DELAY_SECONDS)
 
-    GPIO.output(DRA818_PTT_PIN, GPIO.LOW)
-    log_debug("PTT test: PTT->LOW (keyed)")
+    for pin in ptt_pins:
+        claim_ptt_line(pin)
+    for pin in ptt_pins:
+        GPIO.output(pin, GPIO.LOW)
+    log_debug(f"PTT test: PTT->LOW (keyed, pins {ptt_pins})")
     time.sleep(key_seconds)
 
-    GPIO.output(DRA818_PTT_PIN, GPIO.HIGH)
-    log_debug("PTT test: PTT->HIGH (unkeyed)")
-    GPIO.output(DRA818_POWER_DOWN_PIN, GPIO.LOW)
-    log_debug("PTT test: PD->LOW (radio off)")
+    for pin in ptt_pins:
+        GPIO.output(pin, GPIO.HIGH)
+    log_debug(f"PTT test: PTT->HIGH (unkeyed, pins {ptt_pins})")
+    for pin in ptt_pins:
+        release_ptt_line(pin)
+    apply_pd_idle_policy()
+    if PD_IDLE_MODE == "sleep":
+        log_debug("PTT test: PD->LOW (idle sleep mode)")
+    else:
+        log_debug("PTT test: PD->INPUT (released to Feather M0)")
 
     elapsed = time.monotonic() - started_at
     log(f"PTT test: complete (elapsed {elapsed:.2f}s)")
+
+
+def _led_breathe(pwm, lo: float, hi: float, period: float, duration: float, verbose: bool = False):
+    """Drive *pwm* through a smooth sine-wave breathe between *lo* and *hi* duty-cycle
+    for *duration* seconds, completing full cycles of length *period*."""
+    import math
+    step = 0.02  # seconds per frame (~50 fps)
+    log_interval = 0.25  # seconds between verbose dc log lines
+    t = 0.0
+    last_logged = -log_interval
+    end = time.monotonic() + duration
+    while time.monotonic() < end:
+        # Sine goes 0→1→0 over one period
+        phase = (t % period) / period  # 0.0 – 1.0
+        sine = (1.0 - math.cos(2 * math.pi * phase)) / 2.0  # 0.0 – 1.0
+        dc = lo + (hi - lo) * sine
+        pwm.ChangeDutyCycle(dc)
+        if verbose and t - last_logged >= log_interval:
+            log_debug(f"    dc={dc:5.1f}%  phase={phase:.3f}  t={t:.2f}s")
+            last_logged = t
+        time.sleep(step)
+        t += step
+
+
+def _led_solid(pwm, dc: float, duration: float, verbose: bool = False):
+    """Hold *pwm* at a constant duty-cycle *dc* for *duration* seconds."""
+    pwm.ChangeDutyCycle(dc)
+    if verbose:
+        log_debug(f"    dc={dc:5.1f}%  (solid)  duration={duration:.2f}s")
+    time.sleep(duration)
+
+
+def run_diag_led(duration: float, verbose: bool = False, config_path: str = None):
+    """Cycle through all operational LED states for *duration* seconds each."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("led-test", config_path)
+
+    if not STATUS_LED_ENABLED:
+        log("Status LED is disabled (STATUS_LED_ENABLED=False).")
+        log("Enable it in the config [status_led] section or set STATUS_LED_ENABLED=True.")
+        return
+
+    # Duty-cycle sense: for active-high wiring, dc=100 means fully on.
+    # For active-low, invert: on=0, off=100.
+    hi = float(STATUS_LED_MAX_PCT) if STATUS_LED_ACTIVE_HIGH else 0.0
+    lo = 0.0 if STATUS_LED_ACTIVE_HIGH else float(STATUS_LED_MAX_PCT)
+    off_dc = 0.0 if STATUS_LED_ACTIVE_HIGH else float(STATUS_LED_MAX_PCT)
+
+    log_section("LED Test")
+    log(f"  pin         : GPIO{STATUS_LED_PIN}")
+    log(f"  active_high : {STATUS_LED_ACTIVE_HIGH}")
+    log(f"  pwm         : {STATUS_LED_PWM_FREQ}Hz")
+    log(f"  max_pct     : {STATUS_LED_MAX_PCT}%")
+    log(f"  per_state   : {duration:.2f}s")
+    log(f"  confirm     : interactive")
+    if verbose:
+        log(f"  dc_hi       : {hi:.1f}%")
+        log(f"  dc_lo       : {lo:.1f}%")
+        log(f"  dc_off      : {off_dc:.1f}%")
+        log(f"  states      : idle(4s) capture(2s) encode(1s) tx(solid) error(0.4s) off idle")
+    log("-" * 72)
+
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(STATUS_LED_PIN, GPIO.OUT, initial=GPIO.LOW if STATUS_LED_ACTIVE_HIGH else GPIO.HIGH)
+    pwm = GPIO.PWM(STATUS_LED_PIN, STATUS_LED_PWM_FREQ)
+    pwm.start(off_dc)
+
+    states_run = 0
+    try:
+        # idle: slow breathe (4 s period)
+        log("LED test: state=idle (slow breathe)")
+        if verbose:
+            log_debug(f"  period=4.0s  lo={lo:.1f}%  hi={hi:.1f}%  duration={duration:.2f}s")
+        _led_breathe(pwm, lo, hi, period=4.0, duration=duration, verbose=verbose)
+        states_run += 1
+
+        # capture: medium breathe (2 s period)
+        log("LED test: state=capture (capture-rate breathe)")
+        if verbose:
+            log_debug(f"  period=2.0s  lo={lo:.1f}%  hi={hi:.1f}%  duration={duration:.2f}s")
+        _led_breathe(pwm, lo, hi, period=2.0, duration=duration, verbose=verbose)
+        states_run += 1
+
+        # encode: faster breathe (1 s period)
+        log("LED test: state=encode (encode-rate breathe)")
+        if verbose:
+            log_debug(f"  period=1.0s  lo={lo:.1f}%  hi={hi:.1f}%  duration={duration:.2f}s")
+        _led_breathe(pwm, lo, hi, period=1.0, duration=duration, verbose=verbose)
+        states_run += 1
+
+        # tx: solid on
+        log("LED test: state=tx (solid on)")
+        _led_solid(pwm, hi, duration, verbose=verbose)
+        states_run += 1
+
+        # error: rapid breathe (0.4 s period)
+        log("LED test: state=error (rapid breathe)")
+        if verbose:
+            log_debug(f"  period=0.4s  lo={lo:.1f}%  hi={hi:.1f}%  duration={duration:.2f}s")
+        _led_breathe(pwm, lo, hi, period=0.4, duration=duration, verbose=verbose)
+        states_run += 1
+
+        # off
+        log("LED test: state=off (off)")
+        _led_solid(pwm, off_dc, duration, verbose=verbose)
+        states_run += 1
+
+        # return to idle
+        log("LED test: state=idle (return to idle breathe)")
+        if verbose:
+            log_debug(f"  period=4.0s  lo={lo:.1f}%  hi={hi:.1f}%  duration={duration:.2f}s")
+        _led_breathe(pwm, lo, hi, period=4.0, duration=duration, verbose=verbose)
+        states_run += 1
+
+    finally:
+        pwm.stop()
+        GPIO.output(STATUS_LED_PIN, GPIO.LOW if STATUS_LED_ACTIVE_HIGH else GPIO.HIGH)
+        if verbose:
+            log_debug("  GPIO cleanup: PWM stopped, pin set to idle level")
+
+    answer = input("LED test: did you see the expected LED pattern? [y/N]: ").strip().lower()
+    log("-" * 72)
+    if answer in ("y", "yes"):
+        log("  Result      : PASS")
+        log(f"  states      : {states_run}")
+        log("  note        : visual confirmation accepted")
+    else:
+        log("  Result      : FAIL")
+        log(f"  states      : {states_run}")
+        log("  note        : visual confirmation rejected")
+    log("-" * 72)
+
+
+def _maidenhead(lat: float, lon: float, precision: int = 4) -> str:
+    """Return the Maidenhead grid locator for *lat*/*lon*.
+
+    *precision* controls the number of character pairs:
+      2 → 4 chars (field + square)
+      3 → 6 chars (+ subsquare)
+      4 → 8 chars (+ extended square)   ← default
+    """
+    lon_adj = min(lon + 180.0, 359.9999)
+    lat_adj = min(lat + 90.0,  179.9999)
+
+    chars: List[str] = []
+
+    # Pair 1 – field (letters A–R, 20 ° lon × 10 ° lat)
+    chars.append(chr(ord('A') + int(lon_adj / 20)))
+    chars.append(chr(ord('A') + int(lat_adj / 10)))
+    lon_adj %= 20
+    lat_adj %= 10
+
+    if precision >= 2:
+        # Pair 2 – square (digits 0–9, 2 ° lon × 1 ° lat)
+        chars.append(str(int(lon_adj / 2)))
+        chars.append(str(int(lat_adj)))
+        lon_adj %= 2
+        lat_adj %= 1
+
+    if precision >= 3:
+        # Pair 3 – subsquare (letters a–x, 5 ′ lon × 2.5 ′ lat)
+        chars.append(chr(ord('a') + int(lon_adj * 12)))
+        chars.append(chr(ord('a') + int(lat_adj * 24)))
+        lon_adj %= 1 / 12
+        lat_adj %= 1 / 24
+
+    if precision >= 4:
+        # Pair 4 – extended square (digits 0–9, 0.5 ′ lon × 0.25 ′ lat)
+        chars.append(str(int(lon_adj * 120)))
+        chars.append(str(int(lat_adj * 240)))
+
+    return ''.join(chars)
+
+
+def _parse_nmea_gga(sentence: str) -> Optional[tuple]:
+    """Parse a GGA or GNGGA NMEA sentence.
+
+    Returns *(lat_deg, lon_deg, alt_m)* on success, *None* if the sentence
+    is malformed or contains no fix data.
+    """
+    parts = sentence.split(',')
+    if len(parts) < 10:
+        return None
+    try:
+        # Fix quality indicator in field 6: 0 = no fix
+        if not parts[6] or parts[6] == '0':
+            return None
+        if not parts[2] or not parts[4]:
+            return None
+
+        lat_raw = float(parts[2])
+        lat_deg = int(lat_raw / 100) + (lat_raw % 100) / 60.0
+        if parts[3].upper() == 'S':
+            lat_deg = -lat_deg
+
+        lon_raw = float(parts[4])
+        lon_deg = int(lon_raw / 100) + (lon_raw % 100) / 60.0
+        if parts[5].upper() == 'W':
+            lon_deg = -lon_deg
+
+        alt_m = float(parts[9]) if parts[9] else None
+        return lat_deg, lon_deg, alt_m
+    except (ValueError, IndexError):
+        return None
+
+
+def read_gps_fix(timeout: float = None) -> Optional[tuple]:
+    """Read one GPS fix from the UART serial port.
+
+    Opens *GPS_SERIAL_PORT* at *GPS_SERIAL_BAUD*, scans incoming NMEA
+    sentences for a GGA record with a valid fix, and returns
+    *(lat_deg, lon_deg, alt_m)* — or *None* if no fix arrives within
+    *timeout* seconds (defaults to *GPS_OVERLAY_TIMEOUT*).
+
+    Requires the ``pyserial`` package.  Import errors are logged at DEBUG
+    level and cause *None* to be returned gracefully.
+    """
+    if timeout is None:
+        timeout = GPS_OVERLAY_TIMEOUT
+    try:
+        import serial  # pyserial
+    except ImportError:
+        log_debug("GPS overlay: pyserial not installed — skipping fix read")
+        return None
+    try:
+        with serial.Serial(GPS_SERIAL_PORT, GPS_SERIAL_BAUD, timeout=1) as ser:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                raw = ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="replace").strip()
+                if line.startswith(("$GPGGA", "$GNGGA")):
+                    fix = _parse_nmea_gga(line)
+                    if fix is not None:
+                        return fix
+    except OSError as err:
+        log_debug(f"GPS overlay: serial error on {GPS_SERIAL_PORT}: {err}")
+    return None
+
+
+def run_diag_gps(duration: float, verbose: bool = False, config_path: str = None):
+    """Read raw NMEA sentences from the GPS UART for *duration* seconds."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("gps-test", config_path)
+    log_section("Diag: GPS")
+    log(f"  device      : {GPS_SERIAL_PORT}")
+    log(f"  baud        : {GPS_SERIAL_BAUD}")
+    log(f"  duration    : {duration:.0f}s")
+    if verbose:
+        log_debug(f"  timeout     : 1s per readline")
+        log_debug(f"  filter      : NMEA sentences only (lines starting with '$')")
+    log("-" * 72)
+    try:
+        import serial  # pyserial
+    except ImportError:
+        log("FAIL  pyserial not installed.  Run: pip3 install pyserial")
+        sys.exit(1)
+    try:
+        with serial.Serial(GPS_SERIAL_PORT, GPS_SERIAL_BAUD, timeout=1) as ser:
+            start = time.monotonic()
+            count = 0
+            while time.monotonic() - start < duration:
+                raw = ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="replace").strip()
+                if line.startswith("$"):
+                    log(f"  {line}")
+                    count += 1
+        if count > 0:
+            log(f"PASS  Received {count} NMEA sentence(s) in {duration:.0f}s")
+        else:
+            log(f"WARN  Received 0 NMEA sentence(s) in {duration:.0f}s — check wiring and baud rate")
+    except OSError as error:
+        log(f"FAIL  Serial error on {GPS_SERIAL_PORT}: {error}")
+        sys.exit(1)
+
+
+def run_diag_ptt(duration: float, verbose: bool = False, config_path: str = None,
+                 module: str = "uhf"):
+    """Key PTT/PD for *duration* seconds and report GPIO state transitions."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("ptt-test", config_path)
+
+    module = module.lower()
+    band_ranges = {"vhf": "134 – 174 MHz  (DRA818V)", "uhf": "400 – 470 MHz  (DRA818U)"}
+    band_label  = band_ranges.get(module, module.upper())
+    power_label = "LOW (≤0.5 W)" if True else "HIGH (1 W)"  # HL is always held LOW at idle
+    ptt_pin     = DRA818_UHF_PTT_PIN if module == "uhf" else DRA818_VHF_PTT_PIN
+    ptt_phys    = "pin 11" if module == "uhf" else "pin 13"
+
+    log_section("Diag: PTT")
+    log(f"  module      : {module.upper()}  —  {band_label}")
+    log(f"  power       : {power_label}  (h_l held LOW during test)")
+    log(f"  wake_delay  : {RADIO_WAKE_DELAY_SECONDS}s  (time for DRA818 to stabilise after PD HIGH)")
+    log(f"  ptt_delay   : {PTT_KEY_DELAY_SECONDS}s  (settling time before audio)")
+    log(f"  key_dur     : {duration:.2f}s")
+    log("-" * 72)
+    log(f"  Signal   BCM GPIO   Phys Pin   Idle          Active")
+    log(f"  ──────── ────────── ────────── ───────────── ────────────────")
+    log(f"  PTT      GPIO{ptt_pin:<6}  {ptt_phys}     HIGH (idle)   LOW (keyed)")
+    log(f"  PD       GPIO{DRA818_POWER_DOWN_PIN:<6}  pin  7     LOW (sleep)   HIGH (active)")
+    log(f"  HL       GPIO{DRA818_POWER_LEVEL_PIN:<6}  pin 15     LOW (≤0.5 W) HIGH (1 W)")
+    log(f"  Audio L  GPIO{AUDIO_LEFT_PWM_PIN:<6}  pin 32     PWM output")
+    log(f"  Audio R  GPIO{AUDIO_RIGHT_PWM_PIN:<6}  pin 33     PWM output")
+
+    GPIO.setwarnings(False)
+    GPIO.cleanup()
+    GPIO.setmode(GPIO.BCM)
+    # PTT lines idle as INPUT PUD_UP — shared with Feather M0, weak pull keeps them HIGH.
+    # Pi claims ownership via claim_ptt_line() immediately before keying.
+    GPIO.setup(DRA818_VHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(DRA818_UHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW)   # apply_tx_power_level sets final level
+    GPIO.setup(DRA818_POWER_DOWN_PIN,  GPIO.IN)                      # apply_pd_idle_policy sets final state
+    apply_tx_power_level()
+    apply_pd_idle_policy()
+
+    if verbose:
+        log_debug(f"  GPIO init: VHF_PTT=INPUT_PUD_UP  UHF_PTT=INPUT_PUD_UP  HL={TX_POWER_LEVEL.upper()}  PD_IDLE={PD_IDLE_MODE.upper()}")
+
+    started_at = time.monotonic()
+    try:
+        log(f"  [{time.monotonic()-started_at:.3f}s]  PD  -> OUTPUT HIGH (Pi claims line, radio wake — waiting {RADIO_WAKE_DELAY_SECONDS}s)")
+        apply_tx_power_level()
+        GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.HIGH)  # claim PD from Feather M0
+        time.sleep(RADIO_WAKE_DELAY_SECONDS)
+
+        claim_ptt_line(ptt_pin)
+        log(f"  [{time.monotonic()-started_at:.3f}s]  PTT -> LOW   (keyed — holding {duration:.2f}s)")
+        GPIO.output(ptt_pin, GPIO.LOW)
+        time.sleep(duration)
+
+        log(f"  [{time.monotonic()-started_at:.3f}s]  PTT -> HIGH  (unkeyed)")
+        GPIO.output(ptt_pin, GPIO.HIGH)
+        release_ptt_line(ptt_pin)
+        time.sleep(POST_PLAYBACK_DELAY_SECONDS)
+
+        apply_pd_idle_policy()
+        if PD_IDLE_MODE == "sleep":
+            log(f"  [{time.monotonic()-started_at:.3f}s]  PD  -> LOW (idle sleep mode)")
+        else:
+            log(f"  [{time.monotonic()-started_at:.3f}s]  PD  -> INPUT (released back to Feather M0)")
+    finally:
+        if verbose:
+            log_debug(f"  [{time.monotonic()-started_at:.3f}s]  GPIO left in safe state (PTT=INPUT_PUD_UP, PD_IDLE={PD_IDLE_MODE.upper()})")
+
+    elapsed = time.monotonic() - started_at
+    log("-" * 72)
+    log(f"  Result      : PASS")
+    log(f"  module      : {module.upper()}  ({band_label})")
+    log(f"  elapsed     : {elapsed:.2f}s")
+    log(f"  keyed_for   : {duration:.2f}s")
+    log(f"  note        : all GPIO transitions completed without error")
+    log("-" * 72)
+
+
+def run_diag_tx(mode: str = "m1", image_path: str = None, image_dir: str = None,
+                no_tx: bool = False, module: str = "uhf",
+                verbose: bool = False, config_path: str = None):
+    """Run the full capture → encode → TX pipeline once using a test image."""
+    configure_logging(debug=verbose)
+
+    # Full config needed so SLOWFRAME_BIN, TIMESTAMPED_DIR, etc. are set.
+    if config_path:
+        load_config(config_path)
+    ensure_runtime_paths()
+
+    # Resolve the image to use.
+    if image_path:
+        if not os.path.isfile(image_path):
+            log(f"FAIL  --image path not found: {image_path}")
+            sys.exit(1)
+        resolved_image = image_path
+    elif image_dir:
+        if not os.path.isdir(image_dir):
+            log(f"FAIL  --image-dir path not found: {image_dir}")
+            sys.exit(1)
+        candidates = sorted(
+            f for f in os.listdir(image_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        )
+        if not candidates:
+            log(f"FAIL  No .jpg/.png images found in: {image_dir}")
+            sys.exit(1)
+        resolved_image = os.path.join(image_dir, candidates[0])
+    else:
+        resolved_image = TEST_IMAGE
+
+    # Resolve the PTT pin for the selected module.
+    ptt_pin = DRA818_UHF_PTT_PIN if module.lower() == "uhf" else DRA818_VHF_PTT_PIN
+
+    # Build a minimal args namespace that run_test_pipeline expects.
+    import types
+    fake_args = types.SimpleNamespace(
+        test=mode,
+        test_image=resolved_image,
+        no_tx=no_tx,
+        output_dir=TIMESTAMPED_DIR,
+        ptt_pin=ptt_pin,
+    )
+
+    # Drive all PTT and control pins to safe idle states immediately — before
+    # any subprocess work — so a previous command's stale state cannot leave
+    # PTT asserted.  PTT lines idle as INPUT PUD_UP (shared with Feather M0).
+    if not no_tx:
+        GPIO.setwarnings(False)
+        GPIO.cleanup()
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(DRA818_VHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(DRA818_UHF_PTT_PIN,     GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW)
+        GPIO.setup(DRA818_POWER_DOWN_PIN,  GPIO.IN)  # PD released — Feather M0 owns at idle
+
+    # Run capability discovery after GPIO is safe.
+    runtime_state = discover_slowframe_capabilities()
+
+    try:
+        run_test_pipeline(mode, fake_args, runtime_state)
+    finally:
+        if not no_tx:
+            # PTT lines are INPUT PUD_UP at idle and PD is INPUT (released to
+            # Feather M0) — transmit_sstv_audio() already returned them to
+            # this state, so no additional cleanup is needed here.
+            pass
+
+
+def run_diag_alsa(verbose: bool = False, config_path: str = None):
+    """List ALSA playback devices and verify aplay is reachable."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("alsa-test", config_path)
+
+    log_section("Diag: ALSA")
+    log(f"  audio_L     : GPIO{AUDIO_LEFT_PWM_PIN}  (PWM)")
+    log(f"  audio_R     : GPIO{AUDIO_RIGHT_PWM_PIN}  (PWM)")
+    log(f"  overlay     : {AUDIO_OVERLAY}")
+    log("-" * 72)
+
+    import shutil
+    aplay_path = shutil.which("aplay")
+    if not aplay_path:
+        log("FAIL  aplay not found in PATH.  Install: sudo apt install alsa-utils")
+        sys.exit(1)
+    log(f"  aplay       : {aplay_path}")
+
+    # aplay -l — hardware device list
+    log("ALSA: hardware device list (aplay -l)")
+    try:
+        result = run(["aplay", "-l"], capture_output=True, text=True)
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            for line in output.splitlines():
+                log(f"  {line}")
+        else:
+            log("  (no output)")
+    except Exception as error:
+        log(f"FAIL  aplay -l failed: {error}")
+        sys.exit(1)
+
+    # aplay -L — PCM device names
+    log("ALSA: PCM device names (aplay -L)")
+    try:
+        result = run(["aplay", "-L"], capture_output=True, text=True)
+        output = (result.stdout + result.stderr).strip()
+        audremap_lines = []
+        for line in output.splitlines():
+            if verbose:
+                log(f"  {line}")
+            if "audremap" in line.lower() or "headphones" in line.lower():
+                audremap_lines.append(line.strip())
+        if not verbose and audremap_lines:
+            log("  (audremap / Headphones entries)")
+            for line in audremap_lines:
+                log(f"    {line}")
+        elif not verbose and not audremap_lines:
+            log("  WARN  No audremap or Headphones PCM device found")
+            log("        Check that /boot/config.txt contains:")
+            log(f"          dtoverlay=audremap,enable_jack=on")
+    except Exception as error:
+        log(f"FAIL  aplay -L failed: {error}")
+        sys.exit(1)
+
+    log("-" * 72)
+    log("  Result      : PASS")
+    log("  note        : aplay reachable; Headphones PCM present (dtoverlay=audremap maps GPIO12/13 to 'Headphones')")
+    log("-" * 72)
+
+
+def run_diag_camera(verbose: bool = False, config_path: str = None):
+    """Verify rpicam-still is present and take a test capture."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("camera-test", config_path)
+
+    log_section("Diag: Camera")
+    log(f"  binary      : {RPICAM_BIN}")
+    log(f"  quality     : {RPICAM_QUALITY}")
+    log(f"  metering    : {RPICAM_METERING}")
+    log(f"  exposure    : {RPICAM_EXPOSURE}")
+    log(f"  awb         : {RPICAM_AWB}")
+    log(f"  test_image  : {TEST_IMAGE}")
+    log("-" * 72)
+
+    if not os.path.isfile(RPICAM_BIN):
+        log(f"FAIL  rpicam-still not found at {RPICAM_BIN}")
+        log( "      Install: sudo apt install rpicam-apps")
+        sys.exit(1)
+    log(f"  binary OK   : {RPICAM_BIN}")
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        out_path = tmp.name
+
+    cmd = [
+        RPICAM_BIN, "--nopreview",
+        "-o", out_path,
+        "--quality", str(RPICAM_QUALITY),
+        "--metering", RPICAM_METERING,
+        "--exposure", RPICAM_EXPOSURE,
+        "--awb", RPICAM_AWB,
+        "--lens-position", "0",
+    ]
+    if verbose:
+        log_debug(f"  command: {' '.join(cmd)}")
+
+    log("Camera: capturing test image …")
+    try:
+        proc = run(cmd, capture_output=True, text=True)
+        combined_output = proc.stdout + proc.stderr
+        if verbose or proc.returncode != 0:
+            for line in combined_output.splitlines():
+                if line.strip():
+                    log(f"  rpicam-still: {line}")
+        if proc.returncode != 0:
+            raise CalledProcessError(proc.returncode, cmd, proc.stdout, proc.stderr)
+        size = os.path.getsize(out_path)
+        log(f"Camera: OK  {size:,} bytes  -> {out_path}")
+        result = "PASS"
+        note = f"captured {size:,} bytes"
+    except CalledProcessError as error:
+        combined_output = (error.stdout or "") + (error.stderr or "")
+        log(f"Camera: FAIL  exit status {error.returncode}")
+        if "pipeline handler in use" in combined_output.lower() or "failed to acquire camera" in combined_output.lower():
+            log( "        Camera is held by another process.")
+            log( "        Kill any other rpicam-still/libcamera instance and retry.")
+        elif "no cameras available" in combined_output.lower():
+            log( "        No camera detected — check ribbon cable and raspi-config camera enable.")
+        else:
+            log( "        Check camera ribbon cable and that the camera is enabled in raspi-config.")
+        result = "FAIL"
+        note = f"rpicam-still exit {error.returncode}"
+    except Exception as error:
+        log(f"Camera: FAIL  {error}")
+        result = "FAIL"
+        note = str(error)
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    log("-" * 72)
+    log(f"  Result      : {result}")
+    log(f"  note        : {note}")
+    log("-" * 72)
+    if result == "FAIL":
+        sys.exit(1)
+
+
+def run_diag_slowframe(verbose: bool = False, config_path: str = None):
+    """Check SlowFrame binary, version, MMSSTV library status, and available modes."""
+    configure_logging(debug=verbose)
+    if verbose:
+        print_runtime_startup("slowframe-test", config_path)
+
+    log_section("Diag: SlowFrame")
+    log(f"  binary      : {SLOWFRAME_BIN}")
+    log("-" * 72)
+
+    if not os.path.isfile(SLOWFRAME_BIN):
+        log(f"FAIL  slowframe binary not found at {SLOWFRAME_BIN}")
+        log( "      Check the path or set --slowframe / [paths] slowframe= in your config.")
+        sys.exit(1)
+
+    st = os.stat(SLOWFRAME_BIN)
+    executable = os.access(SLOWFRAME_BIN, os.X_OK)
+    log(f"  binary OK   : {SLOWFRAME_BIN}")
+    log(f"  size        : {st.st_size:,} bytes")
+    log(f"  permissions : {oct(st.st_mode & 0o777)}  executable={'yes' if executable else 'NO'}")
+    if not executable:
+        log(f"FAIL  binary is not executable.  Fix: chmod +x {SLOWFRAME_BIN}")
+        sys.exit(1)
+
+    def _emit(output, skip_usage=True):
+        """Print binary output lines, indented, optionally dropping usage/example footer."""
+        for line in output.splitlines():
+            if skip_usage and line.strip().lower().startswith(("usage:", "example:")):
+                continue
+            log(f"  {line}")
+
+    def _parse_version(output):
+        m = re.search(r'SlowFrame\s+(v[\d.]+)', output, re.IGNORECASE)
+        return m.group(1) if m else "(unknown)"
+
+    def _parse_mmsstv(output):
+        """Return (loaded: bool, lib_path: str|None, lib_version: str|None) from -M output."""
+        loaded, path, version = False, None, None
+        for line in output.splitlines():
+            sl = line.strip().lower()
+            if sl.startswith("library status:") and "detected" in sl and "not detected" not in sl:
+                loaded = True
+            if sl.startswith("library path:"):
+                path = line.strip().split(":", 1)[1].strip()
+            if sl.startswith("library version:"):
+                version = line.strip().split(":", 1)[1].strip()
+        return loaded, path, version
+
+    def _parse_mode_count(output):
+        """Count mode table rows (code followed by ≥2 spaces then non-space)."""
+        return sum(1 for ln in output.splitlines()
+                   if re.match(r'^\s*[a-z][a-z0-9]*\s{2,}\S', ln))
+
+    # ── -M: MMSSTV library status ────────────────────────────────────────────
+    log("")
+    log("[ slowframe -M ]")
+    mmsstv_loaded, mmsstv_lib_path, mmsstv_lib_version = False, None, None
+    try:
+        m_result = run(
+            [SLOWFRAME_BIN, "-M"],
+            capture_output=True, text=True,
+            timeout=SLOWFRAME_LIST_TIMEOUT_SECONDS,
+        )
+        m_output = (m_result.stdout + m_result.stderr)
+        mmsstv_loaded, mmsstv_lib_path, mmsstv_lib_version = _parse_mmsstv(m_output)
+        _emit(m_output, skip_usage=False)
+    except Exception as error:
+        log(f"  WARN  slowframe -M failed: {error}")
+
+    # ── -L: available modes ───────────────────────────────────────────────────
+    log("")
+    log("[ slowframe -L ]")
+    version_str = "(unknown)"
+    mode_count = 0
+    try:
+        l_result = run(
+            [SLOWFRAME_BIN, "-L"],
+            capture_output=True, text=True,
+            timeout=SLOWFRAME_LIST_TIMEOUT_SECONDS,
+        )
+        l_output = (l_result.stdout + l_result.stderr)
+        version_str = _parse_version(l_output)
+        mode_count = _parse_mode_count(l_output)
+        _emit(l_output, skip_usage=not verbose)
+    except Exception as error:
+        log(f"FAIL  slowframe -L failed: {error}")
+        sys.exit(1)
+
+    # ── summary ───────────────────────────────────────────────────────────────
+    log("")
+    log("-" * 72)
+    log(f"  Result      : PASS")
+    log(f"  version     : {version_str}")
+    if mmsstv_loaded:
+        mmsstv_detail = f"v{mmsstv_lib_version}" if mmsstv_lib_version else ""
+        if mmsstv_lib_path:
+            mmsstv_detail = (mmsstv_detail + f"  {mmsstv_lib_path}").strip()
+        log(f"  mmsstv      : LOADED  {mmsstv_detail}".rstrip())
+    else:
+        log(f"  mmsstv      : NOT LOADED")
+        log(f"  hint        : export {MMSSTV_LIBRARY_ENV_VAR}=/path/to/libsstv_encoder.so")
+    log(f"  modes       : {mode_count}")
+    log("-" * 72)
 
 
 def process_capture(index):
@@ -2411,7 +3838,8 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
 
     log("Stage 3/3  Radio TX")
     try:
-        duration = transmit_sstv_audio(wav_path=wav_path)
+        ptt_pin_override = getattr(args, "ptt_pin", None)
+        duration = transmit_sstv_audio(wav_path=wav_path, ptt_pin=ptt_pin_override)
         log(f"  PASS  transmitted {duration:.1f}s")
     except Exception as error:
         log(f"  FAIL  Transmission failed: {error}")
@@ -2448,31 +3876,2387 @@ def print_mission_summary(runtime_state):
     log("=" * 56)
 
 
+def print_runtime_startup(run_mode: str, config_path: str = None):
+    """Print effective runtime settings in the standard operator log format."""
+    W = 72
+    bar  = "=" * W
+    dash = "-" * W
+    log(bar)
+    log("  Runtime Startup")
+    log(bar)
+    log(f"  run_mode    : {run_mode}")
+    log(f"  config      : {config_path or '(none)'}")
+    log(f"  schedule    : {TRANSMIT_SCHEDULE_PROFILE}")
+    log(f"  output_dir  : {TIMESTAMPED_DIR}")
+    log(f"  slowframe   : {SLOWFRAME_BIN}")
+    log(f"  test_image  : {TEST_IMAGE}")
+    log(f"  camera      : rpicam-still ({RPICAM_BIN})")
+    log(f"  capture     : quality={RPICAM_QUALITY}  metering={RPICAM_METERING}  "
+        f"exposure={RPICAM_EXPOSURE}  awb={RPICAM_AWB}")
+    log(f"  encode      : format={SLOWFRAME_AUDIO_FORMAT}  rate={SLOWFRAME_SAMPLE_RATE}Hz  "
+        f"aspect={SLOWFRAME_ASPECT_MODE}")
+    callsign_id = f"'{STATION_CALLSIGN}'" if STATION_CALLSIGN else "''"
+    log(f"  overlay     : timestamp={SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY}  "
+        f"callsign={SLOWFRAME_ENABLE_CALLSIGN_OVERLAY}  id={callsign_id}")
+    log(f"  status_led  : enabled={STATUS_LED_ENABLED}  pin=GPIO{STATUS_LED_PIN}  "
+        f"active_high={STATUS_LED_ACTIVE_HIGH}  pwm={STATUS_LED_PWM_FREQ}Hz  max={STATUS_LED_MAX_PCT}%")
+    log(f"  ptt         : VHF=GPIO{DRA818_VHF_PTT_PIN}  UHF=GPIO{DRA818_UHF_PTT_PIN}")
+    log(f"  pd          : GPIO{DRA818_POWER_DOWN_PIN}  (HIGH during TX, LOW at idle)")
+    log(f"  h_l         : GPIO{DRA818_POWER_LEVEL_PIN}  default LOW  (L = low power)")
+    log(f"  audio       : L=GPIO{AUDIO_LEFT_PWM_PIN}  R=GPIO{AUDIO_RIGHT_PWM_PIN}  "
+        f"overlay={AUDIO_OVERLAY}")
+    log(f"  alsa        : playback={APLAY_DEVICE}")
+    log(f"  gps         : device={GPS_SERIAL_PORT}  baud={GPS_SERIAL_BAUD}")
+    log(f"  cooldown    : scale={COOLDOWN_SCALE_FACTOR:.2f}  "
+        f"duty_cycle={MAX_TRANSMIT_DUTY_CYCLE * 100:.1f}%  "
+        f"window={ROLLING_DUTY_CYCLE_WINDOW_SECONDS}s")
+    log(dash)
+    log(dash)
+    log("  Result      : READY")
+    log(dash)
+
+
+# =============================================================================
+# Verb: help
+# =============================================================================
+
+VERB_HELP_SUBJECTS = {
+    "mission": (
+        "Run the continuous capture-and-transmit HAB mission loop.",
+        """\
+VERB: mission
+=============
+Run the full HAB mission — continuous image capture, SSTV audio encoding,
+and scheduled radio transmission — until TOTAL captures have been taken.
+
+USAGE
+  python3 pi_sstv.py mission [options]
+
+ARGUMENTS
+  -c, --config PATH         Load settings from a .cfg file before any flags.
+  -s, --schedule PRESET     Transmit schedule: hab_climb, hab_rapid,
+                            hab_cruise (default), hab_float.
+  -n, --total N             Total captures before the mission ends (default: 500).
+  -i, --interval SECS       Seconds between captures (default: 10).
+  --callsign CALL           Callsign overlay on every transmitted image.
+  --no-tx                   Capture and encode but never transmit.
+  --cooldown-scale FACTOR   Multiply all mode cooldowns (default: 1.0).
+  --duty-cycle FRACTION     Max rolling TX fraction (default: 0.25).
+  --min-captures N          Captures between any two transmissions (default: 12).
+  --band {{vhf,uhf,both}}   Radio band to key (default: vhf).
+  --power {{low,high}}      Transmit power level (default: low).
+  --output-dir PATH         Directory for images, WAV, and CSV.
+  --debug                   Enable DEBUG-level logging.
+  --log-file PATH           Log to file in addition to stdout.
+  --quiet-log-file PATH     Log to file only, suppress stdout.
+
+EXAMPLES
+  Standard HAB flight using a config file:
+    python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg
+
+  Rapid-ascent schedule, 200 captures, 8-second intervals:
+    python3 pi_sstv.py mission --schedule hab_rapid --total 200 --interval 8
+
+  Float altitude with MMSSTV library and callsign overlay:
+    python3 pi_sstv.py mission --schedule hab_float --callsign W1AW-11 \\
+        --mmsstv-lib /opt/mmsstv/lib/libsstv_encoder.so
+
+  Bench capture test — no radio required:
+    python3 pi_sstv.py mission --total 10 --no-tx --interval 5
+
+SEE ALSO
+  help schedules    Transmit schedule details and mode sequences
+  help run          Single-shot pipeline test
+  config show       Review effective config before a flight
+""",
+    ),
+    "run": (
+        "Execute a single capture → encode → transmit pipeline pass.",
+        """\
+VERB: run
+=========
+Run a single SSTV pipeline pass: capture an image (or use an existing one),
+encode it to SSTV audio, and optionally transmit it over the radio.
+
+USAGE
+  python3 pi_sstv.py run [options]
+
+ARGUMENTS
+  -m, --mode MODE           SSTV mode to encode (e.g. r36, pd90, m1).
+                            Run 'help modes' to list all modes.
+  -c, --config PATH         Load settings from a .cfg file.
+  --image PATH              Use this image instead of capturing from the camera.
+  --callsign CALL           Callsign overlay baked into the transmitted image.
+  --no-callsign             Suppress callsign overlay even if set in config.
+  --no-timestamp            Suppress timestamp overlay.
+  --no-tx                   Encode but skip radio transmit (safe bench test).
+  --band {{vhf,uhf,both}}   Radio band to key (default: vhf).
+  --power {{low,high}}      Transmit power level (default: low).
+  --keep-wav                Keep the encoded WAV file after the run.
+  --output-dir PATH         Directory for output artifacts.
+  --debug                   Enable DEBUG-level logging.
+  --mmsstv-lib PATH         Path to MMSSTV shared library.
+  --no-mmsstv               Force native SlowFrame modes only.
+
+EXAMPLES
+  Single r36 encode + transmit (radio connected):
+    python3 pi_sstv.py run --mode r36
+
+  Bench encode test — no radio required:
+    python3 pi_sstv.py run --mode pd90 --no-tx
+
+  Encode from an existing image with callsign overlay:
+    python3 pi_sstv.py run --mode m1 --image /home/pi-user/photo.jpg \\
+        --callsign W1AW-11 --no-tx
+
+  Full UHF TX using a config file:
+    python3 pi_sstv.py run --mode r36 --band uhf \\
+        --config /home/pi-user/pi_sstv.cfg
+
+SEE ALSO
+  help modes        Mode durations and MMSSTV requirements
+  help mission      Continuous capture-and-transmit loop
+  diag tx           Full pipeline test via the diag subsystem
+""",
+    ),
+    "schedules": (
+        "List available SSTV transmit schedule presets.",
+        """\
+VERB: schedules
+===============
+List all transmit schedule presets, their mode sequences, and duty-cycle
+summaries.  Use this before a flight to confirm which modes will be used
+and whether the MMSSTV library is required.
+
+USAGE
+  python3 pi_sstv.py schedules [options]
+
+ARGUMENTS
+  -c, --config PATH         Load settings to pick up the active schedule.
+  --detail PRESET           Show expanded details for one preset.
+
+EXAMPLES
+  List all presets:
+    python3 pi_sstv.py schedules
+
+  Expanded detail for the float schedule:
+    python3 pi_sstv.py schedules --detail hab_float
+
+  Show which schedule is active per the config file:
+    python3 pi_sstv.py schedules --config /home/pi-user/pi_sstv.cfg
+
+SEE ALSO
+  help modes        SSTV mode reference table
+  help mission      mission verb flags for selecting a schedule
+""",
+    ),
+    "config": (
+        "Generate, validate, or display a pi_sstv configuration file.",
+        """\
+VERB: config
+============
+Manage the pi_sstv configuration file: generate a documented template,
+validate an existing file, or display the effective runtime settings that
+would result from loading it.
+
+USAGE
+  python3 pi_sstv.py config generate [PATH]
+  python3 pi_sstv.py config validate PATH
+  python3 pi_sstv.py config show     PATH
+
+SUBCOMMANDS
+  generate [PATH]   Write a fully-commented default .cfg to PATH.
+                    Default path: /home/pi-user/pi_sstv.cfg
+  validate  PATH    Parse PATH, check all values, report errors and warnings.
+                    Exits 0 on success, 1 on any invalid value.
+  show      PATH    Load PATH and print the effective runtime settings table
+                    that pi_sstv.py will see when running with this file.
+
+EXAMPLES
+  Generate the default template:
+    python3 pi_sstv.py config generate
+
+  Generate to a custom path:
+    python3 pi_sstv.py config generate /boot/pi_sstv.cfg
+
+  Validate a config before a flight:
+    python3 pi_sstv.py config validate /home/pi-user/pi_sstv.cfg
+
+  Review effective settings:
+    python3 pi_sstv.py config show /home/pi-user/pi_sstv.cfg
+
+SEE ALSO
+  help mission      Mission flags that can override config values
+  service install   Install the systemd service (reads the same config)
+""",
+    ),
+    "service": (
+        "Install or remove the pi_sstv and hamwing-gpio-init systemd services.",
+        """\
+VERB: service
+=============
+Install or remove the systemd unit files that run pi_sstv.py automatically
+on boot and keep the HamWing GPIO lines in a safe idle state.
+
+Two unit files are managed:
+  pi-sstv.service             Runs pi_sstv.py as the HAB mission service.
+  hamwing-gpio-init.service   Sets GPIO idle levels at early boot before the
+                              main service starts (PTT lines INPUT PUD_UP,
+                              PD=LOW, HL=LOW).
+
+USAGE
+  python3 pi_sstv.py service install   [options]
+  python3 pi_sstv.py service uninstall [options]
+  python3 pi_sstv.py service status
+  python3 pi_sstv.py service logs      [--lines N]
+
+ARGUMENTS (install)
+  -c, --config PATH         Path to the .cfg file the service should load.
+  --user USER               System user the service runs as (default: pi-user).
+  --script PATH             Absolute path to pi_sstv.py (default: this file).
+  --python PATH             Python interpreter (default: /usr/bin/python3).
+  --dry-run                 Print the unit file contents without writing them.
+
+EXAMPLES
+  Install with default settings:
+    python3 pi_sstv.py service install
+
+  Install pointing at a config file:
+    python3 pi_sstv.py service install --config /home/pi-user/pi_sstv.cfg
+
+  Preview unit files without installing:
+    python3 pi_sstv.py service install --dry-run
+
+  Check running status:
+    python3 pi_sstv.py service status
+
+  Tail live service logs:
+    python3 pi_sstv.py service logs
+
+  Remove both unit files and disable them:
+    python3 pi_sstv.py service uninstall
+
+NOTE
+  Writing to /etc/systemd/system/ requires root.  The script calls sudo
+  automatically; you will be prompted for your password.
+
+SEE ALSO
+  service status    Check whether both services are running
+  config show       Verify the config file before installing the service
+""",
+    ),
+    "status": (
+        "Check system readiness: binaries, GPIO, audio, config, and services.",
+        """\
+VERB: status
+============
+Run a quick pre-flight readiness check.  Tests every dependency and
+subsystem needed for a HAB mission and prints a PASS/WARN/FAIL summary.
+
+USAGE
+  python3 pi_sstv.py status [options]
+
+ARGUMENTS
+  -c, --config PATH         Config file to load and validate.
+  --verbose                 Show detailed output for every check.
+
+CHECKS PERFORMED
+  Python version            3.9+ required.
+  RPi.GPIO                  Library importable and GPIO available.
+  rpicam-still              Binary present and executable.
+  SlowFrame                 Binary present, version, MMSSTV library.
+  aplay / ALSA              aplay in PATH, audremap PCM device found.
+  Output directory          Exists and is writable.
+  Config file               If provided: parses cleanly, all keys valid.
+  systemd services          pi-sstv.service and hamwing-gpio-init.service.
+
+EXAMPLES
+  Quick readiness check:
+    python3 pi_sstv.py status
+
+  Detailed check with config file:
+    python3 pi_sstv.py status --config /home/pi-user/pi_sstv.cfg --verbose
+
+SEE ALSO
+  diag alsa         Deep ALSA device inspection
+  diag camera       Camera capture test
+  diag slowframe    SlowFrame binary and MMSSTV library check
+  config validate   Config file validation
+""",
+    ),
+    "diag": (
+        "Hardware diagnostic utilities (led, gps, ptt, alsa, camera, slowframe, tx).",
+        """\
+VERB: diag
+==========
+Low-level hardware diagnostics.  Each sub-command exercises one subsystem.
+
+USAGE
+  python3 pi_sstv.py diag SUBCOMMAND [options]
+
+SUBCOMMANDS
+  led [SECS]       Cycle the status LED through all operational states.
+  gps [SECS]       Read NMEA sentences from the GPS UART for SECS seconds.
+  ptt [SECS]       Key PTT/PD GPIO lines for SECS seconds.
+  alsa             List ALSA playback devices and verify aplay.
+  camera           Verify rpicam-still and take a test capture.
+  slowframe        Check SlowFrame binary, version, and MMSSTV library.
+  tx               Run the full capture → encode → TX pipeline once.
+
+EXAMPLES
+  LED blink test, 1.5s per state:
+    python3 pi_sstv.py diag led 1.5
+  GPS NMEA receive for 30 seconds:
+    python3 pi_sstv.py diag gps 30
+  Key PTT for 0.5 seconds (UHF):
+    python3 pi_sstv.py diag ptt 0.5 --module uhf
+  Run a full pipeline test with no TX:
+    python3 pi_sstv.py diag tx --mode r36 --no-tx
+
+SEE ALSO
+  status       System-wide readiness summary
+  run          Single-shot user-facing pipeline run
+""",
+    ),
+    "modes": (
+        "SSTV mode reference table — durations, cooldowns, MMSSTV requirements.",
+        """\
+VERB / TOPIC: modes
+===================
+Lists all built-in SSTV modes with their over-the-air TX duration, required
+cooldown, image width, and whether the MMSSTV encoder library is needed.
+
+USAGE
+  python3 pi_sstv.py help modes
+
+NATIVE MODES (no MMSSTV library required)
+  Name         TX (s)   Cooldown (s)   Width   Description
+  bw24             24            120     320   Fast monochrome, low duty-cycle updates
+  r36              36            150     320   Fast native color, regular updates
+  m4               29            135     320   Fast Martin color, half airtime of M2
+  m2               58            240     320   Balanced, strong compatibility
+  s2               71            300     320   Scottie 2, good compatibility
+  r72              72            300     320   Higher-quality Robot color
+  s1              110            480     320   Scottie 1, best native quality
+  m1              114            480     320   Martin 1, high-quality, less frequent
+
+MMSSTV MODES (require libsstv_encoder.so)
+  Name         TX (s)   Cooldown (s)   Width   Fallback   Description
+  robot8bw          8             90     160   bw24       Ultra-fast monochrome status frame
+  robot12bw        12             90     160   bw24       Very fast monochrome
+  pd50             50            240     320   m2         Fast PD color
+  pd90             90            360     320   r36        Popular fast color
+  pd120           120            540     640   m1         Higher-quality, larger image
+  pd160           160            660     512   m1         Slower quality mode
+  pd180           180            720     640   m1         High-detail mission snapshot
+  fax480          180            720     512   m1         High-detail, test windows
+  pd240           240            900     640   m1         Very high quality PD mode
+  pd290           290           1080     800   pd180      Highest quality mode
+
+SEE ALSO
+  schedules         Mode sequences used during a mission
+  help mmsstv       MMSSTV library installation and detection
+  run --mode MODE   Single-shot encode/TX for any mode
+""",
+    ),
+    "gpio": (
+        "GPIO pin assignments and HamWing wiring reference.",
+        """\
+TOPIC: gpio
+===========
+Pin assignments and wiring reference for the HamWing carrier board.
+All pin numbers use BCM (Broadcom) numbering unless noted.
+
+DRA818 control lines:
+  Signal   BCM GPIO   Physical Pin   Idle State   Active State
+  PD       GPIO 4     Pin 7          LOW (off)    HIGH (on)
+  PTT      GPIO 27    Pin 13         HIGH (idle)  LOW (keyed)
+  HL       GPIO 22    Pin 15         LOW (low-pwr) HIGH (high-pwr)
+
+Audio output (PWM via audremap overlay):
+  Channel  BCM GPIO   Physical Pin
+  Left     GPIO 12    Pin 32
+  Right    GPIO 13    Pin 33
+  (Alternate: GPIO 18 pin 12 / GPIO 19 pin 35 with pins_18_19 overlay)
+
+Both PWM audio pins should be routed through a low-pass filter (LPF) before
+reaching the DRA818 microphone input to remove PWM switching noise above the
+SSTV audio band (~300 Hz - 3 kHz).
+
+Optional peripherals (not used by this script, documented for reference):
+  GPS UART:    TX=GPIO14 (Pin 8)   RX=GPIO15 (Pin 10)
+  I2C sensor:  SDA=GPIO2 (Pin 3)   SCL=GPIO3 (Pin 5)
+
+config.txt audio overlay
+  Standard pair (GPIO 12/13):
+    dtoverlay=audremap,enable_jack=on
+  Alternate pair (GPIO 18/19):
+    dtoverlay=audremap,pins_18_19,enable_jack=on
+
+EXAMPLES
+  Verify PTT and PD GPIO control without audio:
+    python3 pi_sstv.py --ptt-test
+
+EXTERNAL COMMANDS
+  raspi-gpio  (read and set GPIO lines from the command line)
+    Inspect or manually drive the DRA818 control pins to verify wiring
+    without running the full script:
+      raspi-gpio get                 Dump state of all GPIO pins
+      raspi-gpio get {ptt}           Read PTT pin (should be 1 = HIGH when idle)
+      raspi-gpio get {pd}            Read power-down pin (should be 0 = LOW at rest)
+      raspi-gpio set {ptt} op dh     Drive PTT HIGH safely
+      raspi-gpio set {pd} op dl      Drive PD LOW (radio off)
+      raspi-gpio help
+
+  gpio  (WiringPi fallback)
+    Print a full BCM/physical/WiringPi pin state table:
+      gpio readall
+
+  pinout  (Raspberry Pi physical pin diagram)
+    Print an ASCII pinout diagram of the board in the terminal:
+      pinout
+
+SEE ALSO
+  help tx   Transmission timing and GPIO sequence
+""",
+    ),
+    "mmsstv": (
+        "MMSSTV encoder library — installation, detection, and fallback behaviour.",
+        """\
+TOPIC: mmsstv
+=============
+Several SSTV modes require the MMSSTV encoder library (libsstv_encoder.so).
+These modes are not built into SlowFrame and will only work when the shared
+library is present and detectable.
+
+Modes requiring MMSSTV:
+  robot8bw   robot12bw   pd50   pd90   pd120   pd160   pd180   fax480
+
+Detection
+  At startup, the script runs 'slowframe -M' which probes for the library.
+  It checks, in order:
+    1. $MMSSTV_LIB_PATH environment variable (or --mmsstv-lib flag)
+    2. pkg-config --variable=libdir mmsstv-portable
+    3. Standard paths: /usr/local/lib, /usr/lib, /opt/mmsstv/lib
+
+  If detection fails, all MMSSTV modes fall back to their native equivalents
+  (see fallback table below) and a clear warning is printed.
+
+Providing the library path
+  Set the environment variable before running:
+    export MMSSTV_LIB_PATH=/path/to/libsstv_encoder.so
+
+  Or pass it directly on the command line:
+    python3 pi_sstv.py --mmsstv-lib /path/to/libsstv_encoder.so
+
+  Important: use the unversioned .so symlink, not the versioned filename.
+    Correct:   libsstv_encoder.so
+    Incorrect: libsstv_encoder.so.1.0.0
+
+Disabling MMSSTV
+  Force native-only operation regardless of whether the library is present:
+    python3 pi_sstv.py --no-mmsstv
+  or:
+    export SLOWFRAME_NO_MMSSTV=1
+
+Fallback chain
+  When the MMSSTV library is unavailable, each MMSSTV mode falls back to:
+    robot8bw  -> bw24     robot12bw -> bw24
+    pd50      -> m2       pd90      -> r36
+    pd120     -> m1       pd160     -> m1
+    pd180     -> m1       fax480    -> m1
+
+EXAMPLES
+  Verify the library is detected and pd90 encodes correctly:
+    MMSSTV_LIB_PATH=/opt/mmsstv/lib/libsstv_encoder.so \\
+      python3 pi_sstv.py --test pd90 --no-tx
+
+  Force native fallback for the same test:
+    python3 pi_sstv.py --test pd90 --no-mmsstv --no-tx
+
+  Check what modes are available on this installation:
+    python3 pi_sstv.py --list-modes
+
+EXTERNAL COMMANDS
+  slowframe  (MMSSTV library probe)
+    Run the library status check directly to see full SlowFrame diagnostic
+    output independent of this script:
+      slowframe -M
+      MMSSTV_LIB_PATH=/path/to/libsstv_encoder.so slowframe -M
+      slowframe --help
+
+  pkg-config  (library path lookup)
+    If the mmsstv-portable package was installed via a package manager,
+    pkg-config can reveal where the library landed:
+      pkg-config --variable=libdir mmsstv-portable
+      pkg-config --modversion mmsstv-portable
+
+  ldconfig  (shared library cache)
+    Confirm the library is visible to the dynamic linker:
+      ldconfig -p | grep libsstv
+
+SEE ALSO
+  help modes     Full mode reference table
+  help encode    Encoding pipeline and format options
+  help schedule  Transmit schedule presets and duty-cycle behaviour
+""",
+    ),
+    "capture": (
+        "Camera capture settings — metering, exposure, AWB, quality.",
+        """\
+TOPIC: capture
+==============
+Controls how images are taken with rpicam-still and the OV5647 camera module.
+
+The OV5647 is a fixed-focus sensor.  At altitude the subject distance is
+effectively infinite, so the lens is locked at the infinity position and no
+autofocus is attempted.  Exposure and white-balance settings are chosen to
+handle the challenging lighting conditions of a HAB flight:
+
+  --metering  (default: {metering})
+        matrix  - Multi-zone evaluative metering.  Weights each zone of the
+                  frame independently, handling the stark contrast between a
+                  bright ground scene and a black sky at altitude.  Recommended
+                  for HAB missions.
+        average - Average of the whole frame.  The large dark sky area pulls
+                  the exposure high and can overexpose the ground/cloud scene.
+        spot    - Meters only the centre spot.  Not suitable for wide HAB shots.
+
+  --exposure  (default: {exposure})
+        sport   - Biases the AE algorithm toward shorter shutter times to
+                  reduce motion blur from gondola rotation and pendulum swing,
+                  which is most severe when crossing the jet stream.
+        normal  - Balanced shutter/gain trade-off.  Can produce blur on an
+                  active gondola.
+        long    - Allows very long shutter times.  Not recommended at altitude.
+
+  --awb  (default: {awb})
+        Adapts per-frame from the warm color temperature at launch to the
+        cold blue-shifted daylight of the stratosphere.  Auto is the correct
+        choice for a full-flight mission.
+
+  lens-position  (fixed: 0)
+        Always set to 0 (infinity focus).  The OV5647 has a fixed plastic lens
+        and rpicam-still will not move it, but explicitly passing 0 prevents
+        any platform default from interfering.
+
+  --quality  (default: {quality})
+        JPEG compression quality (1-100).  {quality} gives visually lossless images
+        while keeping file sizes manageable for SD write speed.
+
+Current defaults are defined at the top of the script:
+  RPICAM_METERING  = "{metering}"
+  RPICAM_EXPOSURE  = "{exposure}"
+  RPICAM_AWB       = "{awb}"
+  RPICAM_QUALITY   = {quality}
+
+EXAMPLES
+  Override metering for a bench test using an existing image:
+    python3 pi_sstv.py run --mode r36 --image photo.jpg --no-tx
+
+  Run a full test capture with the camera:
+    python3 pi_sstv.py run --mode r36 --no-tx
+
+EXTERNAL COMMANDS
+  rpicam-still
+    The libcamera-based still image capture tool used on all modern
+    Raspberry Pi OS releases.
+      rpicam-still --help
+      man rpicam-still
+    Online reference:
+      https://www.raspberrypi.com/documentation/computers/camera_software.html
+
+SEE ALSO
+  help encode    Image-to-audio SSTV encoding pipeline
+  help overlay   Timestamp and callsign text overlay options
+  diag camera    Camera capture verification test
+""",
+    ),
+    "encode": (
+        "SSTV audio encoding — format, sample rate, aspect mode.",
+        """\
+TOPIC: encode
+=============
+Controls how a captured image is converted to SSTV audio by SlowFrame.
+
+The pipeline is:  capture (.jpg)  ->  SlowFrame  ->  audio file  ->  aplay -> TX
+
+  --format   (default: wav)
+        Audio container format.  wav is the most compatible and is required
+        by aplay for direct playback.  aiff and ogg are provided for
+        offline use or archival.
+        Choices: wav, aiff, ogg
+
+  --sample-rate  (default: 22050)
+        Audio sample rate in Hz passed to SlowFrame.  22050 Hz (half of CD
+        rate) is the standard for SSTV audio and is accepted by all DRA818
+        module audio inputs without resampling artifacts.
+        Reducing this below 22050 is not recommended; the SSTV subcarrier
+        frequencies will be reproduced inaccurately.
+
+  --aspect  (default: center)
+        How SlowFrame handles the camera's native 4:3 aspect ratio when
+        the SSTV mode requires a different pixel geometry:
+        center  - Places the image in the centre of the frame with black
+                  borders.  No distortion.  Recommended.
+        pad     - Adds letterbox/pillarbox padding to fill the canvas.
+        stretch - Stretches the image to fill.  Introduces distortion.
+
+SSTV mode selection
+  The mode determines the transmitted image resolution, duration, and whether
+  the MMSSTV encoder library is required.  See 'help modes' for the full
+  table.  Key parameters:
+        image_width      - Pixel width SlowFrame will scale the input to.
+        duration_seconds - Approximate over-the-air TX time.
+        cooldown_seconds - Minimum wait enforced after this mode transmits.
+
+EXAMPLES
+  Encode a test image to r36 WAV without transmitting:
+    python3 pi_sstv.py run --mode r36 --image /home/pi-user/photo.jpg --no-tx
+
+  Encode with ogg output for archival (bench only):
+    python3 pi_sstv.py run --mode m1 --image /home/pi-user/photo.jpg --no-tx
+
+  Check SSTV mode list (durations, cooldowns, MMSSTV requirements):
+    python3 pi_sstv.py help modes
+
+EXTERNAL COMMANDS
+  slowframe
+    The SSTV audio encoder used by this script.  Run these commands to
+    explore its full capability independently of this script:
+      slowframe --help              General usage and flag reference
+      slowframe -L                  List all available SSTV modes
+      slowframe -L -v               Verbose mode list with format details
+      slowframe -M                  Check MMSSTV library detection status
+    Direct encode example (bypassing this script):
+      slowframe -i photo.jpg -o out.wav -p r36 -f wav -r 22050
+
+  aplay
+    ALSA command-line audio player used to play the encoded WAV to the DRA818.
+      aplay --help
+      man aplay
+    List available playback hardware:
+      aplay -l
+
+SEE ALSO
+  help capture   Camera and image acquisition settings
+  help overlay   Text overlays baked into the image before encoding
+  help mmsstv    MMSSTV library modes (pd50, pd90, pd120, pd160, pd180, fax480)
+  help modes     Full SSTV mode reference table
+""",
+    ),
+    "overlay": (
+        "Timestamp and callsign text overlay settings.",
+        """\
+TOPIC: overlay
+==============
+SlowFrame can bake text overlays directly into the transmitted image before
+encoding.  The overlay is rendered at encode time — it appears in the received
+image on-air and in the saved WAV artifact.
+
+Timestamp overlay (SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY)
+  Prints the UTC capture time in the top-left corner of every image.
+  Enabled by default.  Format: YYYY.MM.DD - HH:MM:SS [TEST] in test mode.
+
+  Configuration constants (edit at top of script):
+    SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY        = True/False
+    SLOWFRAME_TIMESTAMP_OVERLAY_SIZE          = font size (default: 11)
+    SLOWFRAME_TIMESTAMP_OVERLAY_POSITION      = top-left (default)
+    SLOWFRAME_TIMESTAMP_OVERLAY_COLOR         = white (default)
+    SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR    = black (default)
+    SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY  = 0-100 (default: 70)
+
+  Valid positions:
+    top-left, top-right, bottom-left, bottom-right, top, bottom, left, right, center
+
+  Colors: named CSS colors (white, black, yellow, red, ...) or hex (#RRGGBB)
+
+Callsign overlay (SLOWFRAME_ENABLE_CALLSIGN_OVERLAY)
+  Prints the station callsign, typically in the top-right corner.
+  Disabled by default; enabled automatically when --callsign is passed.
+
+  Configuration constants:
+    STATION_CALLSIGN                          = "" (set via --callsign)
+    SLOWFRAME_ENABLE_CALLSIGN_OVERLAY         = False (auto-enabled with --callsign)
+    SLOWFRAME_CALLSIGN_OVERLAY_SIZE           = font size (default: 13)
+    SLOWFRAME_CALLSIGN_OVERLAY_POSITION       = top-right (default)
+    SLOWFRAME_CALLSIGN_OVERLAY_COLOR          = white (default)
+    SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = black (default)
+
+Merging behaviour
+  SlowFrame places all -T overlays at the same rendered position regardless of
+  separate pos= values.  When both timestamp and callsign overlays are enabled,
+  the script merges them into a single overlay string:
+    "W1AW-11  2026.04.12 - 00:25:05 UTC"
+  This prevents the two strings from stacking on top of each other.
+
+Font size scaling
+  Font sizes are scaled proportionally to the mode's image_width, anchored at
+  320 px.  A size=11 at 320 px becomes size=22 at 640 px, keeping the overlay
+  legible at both low- and high-resolution modes.
+
+EXAMPLES
+  Test with callsign overlay:
+    python3 pi_sstv.py run --mode r36 --callsign W1AW-11 --no-tx
+
+  Test high-resolution mode with callsign (overlay scales up automatically):
+    python3 pi_sstv.py run --mode pd120 --callsign W1AW-11 --no-tx
+
+EXTERNAL COMMANDS
+  slowframe  (overlay flags)
+    The -T flag accepts a pipe-delimited overlay descriptor string.  You can
+    experiment with overlay rendering directly:
+      slowframe -i photo.jpg -o out.wav -p r36 \\
+        -T "W1AW-11  2026.04.12|size=11|pos=top-left|color=white|bg=black|opacity=70"
+      slowframe --help              Full -T syntax reference
+      slowframe -L -v               Verbose mode list (shows resolution hints)
+
+SEE ALSO
+  help encode    Audio encoding settings
+  help capture   Camera and image acquisition settings
+""",
+    ),
+    "schedule": (
+        "Transmit schedule presets and duty-cycle gating.",
+        """\
+TOPIC: schedule
+===============
+See full documentation:
+  python3 pi_sstv.py --explain schedule
+
+QUICK REFERENCE
+  Preset         Mode sequence (rotates each TX)
+  standard       r36 -> pd50 -> pd90                     (default)
+  mono           robot12bw -> bw24
+  rapid          robot12bw -> r36
+  quality        pd50 -> pd120
+  high-res       pd120 -> pd290
+  native-rapid   bw24 -> r36                             (no MMSSTV needed)
+  native-balanced r36 -> m2 -> s2                        (no MMSSTV needed)
+  native-detail  r72 -> m1 -> s1                         (no MMSSTV needed)
+
+  Duty-cycle flags:
+    --duty-cycle FRAC     Max TX fraction per rolling hour (default: 0.25)
+    --cooldown-scale N    Multiply all mode cooldowns (default: 1.0)
+    --min-captures N      Captures between transmissions (default: 0)
+
+EXAMPLES
+  List all presets with mode sequences:
+    python3 pi_sstv.py schedules
+
+  Select a schedule for a mission:
+    python3 pi_sstv.py mission --schedule native-balanced
+
+SEE ALSO
+  --explain schedule  Full preset list and duty-cycle gate documentation
+  help schedules      schedules verb with --detail option
+  help modes          Mode durations and MMSSTV requirements
+""",
+    ),
+    "tx": (
+        "Radio transmission GPIO sequence and timing constants.",
+        """\
+TOPIC: tx
+=========
+Controls the radio transmission step: GPIO sequencing, audio playback,
+and timing constants for the DRA818 module on the HamWing carrier board.
+
+GPIO pin assignments (BCM numbering):
+  DRA818_VHF_PTT_PIN     = {ptt}   (physical pin 13)
+  DRA818_POWER_DOWN_PIN  = {pd}    (physical pin 7)
+  DRA818_POWER_LEVEL_PIN = {hl}   (physical pin 15)
+  Audio PWM output pins  = GPIO{al} (left) / GPIO{ar} (right)
+
+Transmission sequence
+  1. PD -> HIGH    Bring the DRA818 out of power-down (radio wake)
+     wait  RADIO_WAKE_DELAY_SECONDS ({wake}s) for the module to stabilise
+  2. PTT -> LOW    Key the transmitter
+     wait  PTT_KEY_DELAY_SECONDS ({ptt_delay}s) before audio starts
+  3. aplay         Stream the WAV file to the audio device
+  4. wait          POST_PLAYBACK_DELAY_SECONDS ({post}s) after playback ends
+  5. PTT -> HIGH   Unkey the transmitter
+  6. PD -> LOW     Return the DRA818 to power-down (radio off)
+
+PTT polarity
+  The DRA818 PTT input is active-LOW.  Idle state is GPIO HIGH (line unkeyed).
+  Pulling GPIO LOW keys the transmitter.  Never leave PTT LOW unattended.
+
+Audio routing
+  Audio is output via the Raspberry Pi PWM pins using the audremap overlay.
+  Both pins feed a low-pass filter (LPF) before the DRA818 microphone input.
+  Required config.txt entry:
+    dtoverlay=audremap,enable_jack=on
+  Alternate pin pair (pins 18/19):
+    dtoverlay=audremap,pins_18_19,enable_jack=on
+
+Flags
+  --no-tx        Skip the entire TX stage.  Images are captured and encoded
+                 but aplay is never called and PTT is never keyed.  Safe for
+                 bench testing without a radio connected.
+  --band         Select radio band: vhf, uhf, or both (default: vhf).
+  --power        Set transmit power: low (0.5 W) or high (1 W) via HL pin.
+
+EXAMPLES
+  Safe encode test on a bench (no radio needed):
+    python3 pi_sstv.py run --mode r36 --no-tx
+
+  Verify PTT GPIO keying for 0.5 seconds:
+    python3 pi_sstv.py diag ptt 0.5
+
+  Full pipeline test including radio TX:
+    python3 pi_sstv.py run --mode r36
+
+EXTERNAL COMMANDS
+  aplay  (ALSA audio playback)
+    The script calls aplay to stream the encoded WAV to the audio device.
+    Useful commands for verifying the audio path before a flight:
+      aplay -l                      List all playback hardware devices
+      aplay -L                      List PCM device names (look for audremap)
+      aplay HAB-SSTV.wav            Manual playback test
+      aplay --help
+      man aplay
+
+  raspi-gpio  (GPIO inspection)
+    Inspect or drive GPIO lines directly without running the full script:
+      raspi-gpio get {ptt}           Read PTT pin state
+      raspi-gpio get {pd}            Read power-down pin state
+      raspi-gpio set {ptt} op dh     Drive PTT HIGH (idle/safe)
+      raspi-gpio help
+
+  gpio  (RPi.GPIO / WiringPi fallback)
+    Alternative GPIO inspection tool if raspi-gpio is unavailable:
+      gpio readall                   Print full pin state table
+
+SEE ALSO
+  help gpio       GPIO pin assignments and wiring reference
+  help capture    Camera image acquisition
+  help encode     SSTV audio encoding pipeline
+  help schedule   Duty-cycle and cooldown protection
+  diag ptt        GPIO PTT keying verification
+""",
+    ),
+    "logging": (
+        "Log verbosity and output destination flags.",
+        """\
+TOPIC: logging
+==============
+Controls log verbosity and output destination.
+
+Log levels
+  INFO  (default)  Normal operational messages: mode selection, capture results,
+                   encode configuration, GPIO transitions, TX timing, warnings.
+  DEBUG            Everything in INFO plus full subprocess command lines,
+                   SlowFrame raw output, fallback chain detail, duty-cycle
+                   arithmetic, and file-wait polling.
+
+Flags
+  --debug                    Enable DEBUG-level output to stdout (and log file
+                             if --log-file is also set).
+  --log-file PATH            Write log output to PATH in addition to stdout.
+  --quiet-log-file PATH      Write log output only to PATH; suppress stdout.
+                             Cannot be combined with --log-file.
+
+Log format
+  [YYYY-MM-DD HH:MM:SS] message
+
+Section headings
+  Major pipeline phases are separated by titled section headers:
+    ========================================================
+      SlowFrame Capability Discovery
+    ========================================================
+  Individual capture cycles are headed:
+    --- Capture #N  YYYY-MM-DD HH:MM:SS ---
+
+EXAMPLES
+  Run a mission with full debug logging to file and stdout:
+    python3 pi_sstv.py mission --debug --log-file /home/pi-user/mission.log
+
+  Silent mission — logs to file only:
+    python3 pi_sstv.py mission --quiet-log-file /home/pi-user/mission.log
+
+  Debug a single encode test to stdout only:
+    python3 pi_sstv.py run --mode pd90 --no-tx --debug
+
+EXTERNAL COMMANDS
+  journalctl  (systemd log access)
+    If pi_sstv.py is run as a systemd service, logs can be queried with:
+      journalctl -u pi-sstv.service -f          Follow live output
+      journalctl -u pi-sstv.service --since today
+      journalctl --help
+
+  grep  (filter log files)
+    Filter saved log files for specific pipeline stages or failures:
+      grep 'FAIL\\|ERROR\\|WARNING' /home/pi-user/mission.log
+      grep 'Encode:' /home/pi-user/mission.log
+      grep 'TX:' /home/pi-user/mission.log
+      grep 'MMSSTV' /home/pi-user/mission.log
+
+  tail / less
+    Monitor or page through a mission log:
+      tail -f /home/pi-user/mission.log
+      less +F /home/pi-user/mission.log
+
+SEE ALSO
+  help capture   Capture stage status messages
+  help encode    Encode stage status messages
+  help tx        TX stage status messages
+""",
+    ),
+}
+
+VERB_HELP_ALIASES = {
+    "runs":       "run",
+    "missions":   "mission",
+    "sched":      "schedules",
+    "schedule":   "schedules",
+    "cfg":        "config",
+    "conf":       "config",
+    "svc":        "service",
+    "services":   "service",
+    "systemd":    "service",
+    "check":      "status",
+    "ready":      "status",
+    "mode":       "modes",
+    "camera":     "capture",
+    "cam":        "capture",
+    "image":      "capture",
+    "audio":      "encode",
+    "encoding":   "encode",
+    "wav":        "encode",
+    "text":       "overlay",
+    "callsign":   "overlay",
+    "timestamp":  "overlay",
+    "radio":      "tx",
+    "transmit":   "tx",
+    "ptt":        "tx",
+    "wiring":     "gpio",
+    "pins":       "gpio",
+    "lib":        "mmsstv",
+    "library":    "mmsstv",
+    "debug":      "logging",
+    "log":        "logging",
+    "duty":       "schedule",
+    "cooldown":   "schedule",
+}
+
+
+def _dispatch_help(args_list):
+    """Parse and execute: help [SUBJECT]"""
+    p = _verb_parser(
+        "help",
+        prog="pi_sstv.py help",
+        description="Display help topics for pi_sstv.py verbs and pipeline subjects.",
+        add_help=False,
+    )
+    p.add_argument(
+        "subject",
+        nargs="?",
+        default=None,
+        metavar="SUBJECT",
+        help="Topic or verb to get help on.  Omit to list all topics.",
+    )
+    a = p.parse_args(args_list)
+
+    if a.subject is None:
+        # List all subjects
+        print("pi_sstv.py  —  HamWing SSTV HAB payload controller\n")
+        print("VERBS")
+        print("  Use 'python3 pi_sstv.py help SUBJECT' for full documentation.\n")
+        # Verbs first, then pipeline topics
+        verb_order = ["mission", "run", "schedules", "config", "service", "status", "diag"]
+        topic_order = ["modes", "gpio", "capture", "encode", "overlay", "mmsstv",
+                       "schedule", "tx", "logging"]
+        print(f"  {'Verb/Subject':<16}  Description")
+        print(f"  {'-'*16}  {'-'*50}")
+        for key in verb_order:
+            summary, _ = VERB_HELP_SUBJECTS[key]
+            print(f"  {key:<16}  {summary}")
+        print()
+        print("PIPELINE TOPICS")
+        print(f"  {'Topic':<16}  Description")
+        print(f"  {'-'*16}  {'-'*50}")
+        for key in topic_order:
+            summary, _ = VERB_HELP_SUBJECTS[key]
+            print(f"  {key:<16}  {summary}")
+        print()
+        print("QUICK EXAMPLES")
+        print("  python3 pi_sstv.py mission --config /home/pi-user/pi_sstv.cfg")
+        print("  python3 pi_sstv.py run --mode r36 --no-tx")
+        print("  python3 pi_sstv.py config generate")
+        print("  python3 pi_sstv.py service install")
+        print("  python3 pi_sstv.py status")
+        print("  python3 pi_sstv.py diag ptt 1.0")
+        return
+
+    canonical = VERB_HELP_ALIASES.get(a.subject.lower(), a.subject.lower())
+    entry = VERB_HELP_SUBJECTS.get(canonical)
+    if entry is None:
+        valid = sorted(set(VERB_HELP_SUBJECTS.keys()) | set(VERB_HELP_ALIASES.keys()))
+        print(f"Unknown subject: '{a.subject}'")
+        print(f"Available subjects: {', '.join(valid)}")
+        sys.exit(1)
+    _, detail = entry
+    detail = detail.format(
+        metering=RPICAM_METERING,
+        exposure=RPICAM_EXPOSURE,
+        awb=RPICAM_AWB,
+        quality=RPICAM_QUALITY,
+        min_captures=MIN_CAPTURES_BETWEEN_TRANSMISSIONS,
+        cooldown_scale=COOLDOWN_SCALE_FACTOR,
+        window=ROLLING_DUTY_CYCLE_WINDOW_SECONDS,
+        duty_pct=int(MAX_TRANSMIT_DUTY_CYCLE * 100),
+        duty_pct_raw=MAX_TRANSMIT_DUTY_CYCLE,
+        budget=int(ROLLING_DUTY_CYCLE_WINDOW_SECONDS * MAX_TRANSMIT_DUTY_CYCLE),
+        ptt=DRA818_VHF_PTT_PIN,
+        pd=DRA818_POWER_DOWN_PIN,
+        hl=DRA818_POWER_LEVEL_PIN,
+        al=AUDIO_LEFT_PWM_PIN,
+        ar=AUDIO_RIGHT_PWM_PIN,
+        wake=RADIO_WAKE_DELAY_SECONDS,
+        ptt_delay=PTT_KEY_DELAY_SECONDS,
+        post=POST_PLAYBACK_DELAY_SECONDS,
+    )
+    print(detail)
+
+
+# =============================================================================
+# Verb: config
+# =============================================================================
+
+def _validate_config_file(path: str, verbose: bool = False) -> bool:
+    """Parse *path* through the full load_config() path and report errors/warnings.
+
+    Returns True if the file is valid, False if any error was found.
+    Prints all output to stdout so it is easy to read in a terminal.
+    """
+    W = 72
+    bar = "=" * W
+    thin = "-" * W
+    print(bar)
+    print("  Config Validate")
+    print(bar)
+    print(f"  path        : {path}")
+
+    if not os.path.isfile(path):
+        print(f"  FAIL  file not found: {path}")
+        print(thin)
+        return False
+
+    errors = []
+    warnings = []
+    passed = []
+
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(path)
+
+    known_sections = {
+        "paths", "mission", "radio", "capture", "encode",
+        "overlay", "mmsstv", "logging", "status_led", "alsa", "gps", "test_panels",
+    }
+    custom_profiles: List[str] = []
+    for section in cfg.sections():
+        lowered = section.lower()
+        if lowered.startswith(SCHEDULE_PROFILE_SECTION_PREFIX):
+            profile_name = lowered[len(SCHEDULE_PROFILE_SECTION_PREFIX):].strip()
+            if not profile_name:
+                errors.append(
+                    f"[{section}]: section name must include a profile name "
+                    f"after '{SCHEDULE_PROFILE_SECTION_PREFIX}'"
+                )
+            else:
+                custom_profiles.append(section)
+        elif section not in known_sections:
+            warnings.append(f"[{section}] — unknown section (will be ignored)")
+
+    # Validate [schedule_profile <name>] sections.
+    for section_name in custom_profiles:
+        modes_raw = cfg.get(section_name, "modes", fallback="").strip()
+        if not modes_raw:
+            errors.append(f"[{section_name}] modes — required; at least one mode token must be listed")
+        else:
+            try:
+                _parse_schedule_mode_list(modes_raw, f"[{section_name}] modes")
+            except ValueError as exc:
+                errors.append(str(exc))
+        fallback_raw = cfg.get(section_name, "unavailable_mode_fallback", fallback="").strip()
+        if fallback_raw:
+            fb = _normalize_schedule_mode_name(fallback_raw)
+            if not fb or not _is_valid_schedule_mode_token(fb):
+                errors.append(
+                    f"[{section_name}] unavailable_mode_fallback = '{fallback_raw}' — invalid mode token"
+                )
+
+    def _check_str_choice(section, key, valid):
+        val = cfg.get(section, key, fallback=None)
+        if val is None:
+            return
+        if val.strip().lower() not in valid:
+            errors.append(f"[{section}] {key} = '{val}' — invalid; must be one of: {', '.join(valid)}")
+        else:
+            passed.append(f"[{section}] {key} = '{val.strip()}'")
+
+    def _check_float_range(section, key, lo, hi):
+        raw = cfg.get(section, key, fallback=None)
+        if raw is None:
+            return
+        try:
+            v = float(raw)
+            if not (lo <= v <= hi):
+                errors.append(f"[{section}] {key} = {v} — out of range [{lo}, {hi}]")
+            else:
+                passed.append(f"[{section}] {key} = {v}")
+        except ValueError:
+            errors.append(f"[{section}] {key} = '{raw}' — not a valid number")
+
+    def _check_int_pos(section, key):
+        raw = cfg.get(section, key, fallback=None)
+        if raw is None:
+            return
+        try:
+            v = int(raw)
+            if v <= 0:
+                errors.append(f"[{section}] {key} = {v} — must be > 0")
+            else:
+                passed.append(f"[{section}] {key} = {v}")
+        except ValueError:
+            errors.append(f"[{section}] {key} = '{raw}' — not a valid integer")
+
+    def _check_int_nonneg(section, key):
+        raw = cfg.get(section, key, fallback=None)
+        if raw is None:
+            return
+        try:
+            v = int(raw)
+            if v < 0:
+                errors.append(f"[{section}] {key} = {v} — must be >= 0")
+            else:
+                passed.append(f"[{section}] {key} = {v}")
+        except ValueError:
+            errors.append(f"[{section}] {key} = '{raw}' — not a valid integer")
+
+    def _check_bool(section, key):
+        raw = cfg.get(section, key, fallback=None)
+        if raw is None:
+            return
+        if raw.strip().lower() not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+            errors.append(f"[{section}] {key} = '{raw}' — not a valid boolean (use true/false)")
+        else:
+            passed.append(f"[{section}] {key} = '{raw.strip()}'")
+
+    def _check_path_exists(section, key):
+        raw = cfg.get(section, key, fallback=None)
+        if not raw or not raw.strip():
+            return
+        if not os.path.exists(raw.strip()):
+            warnings.append(f"[{section}] {key} = '{raw.strip()}' — path does not exist")
+        else:
+            passed.append(f"[{section}] {key} = '{raw.strip()}'")
+
+    def _check_writable_dir(section, key):
+        """Check that the parent directory of a file path exists and is writable.
+        Used for output files that will be created at runtime (e.g. log files)."""
+        raw = cfg.get(section, key, fallback=None)
+        if not raw or not raw.strip():
+            return
+        parent = os.path.dirname(os.path.abspath(raw.strip()))
+        if not os.path.isdir(parent):
+            warnings.append(f"[{section}] {key} = '{raw.strip()}' — parent directory does not exist: {parent}")
+        elif not os.access(parent, os.W_OK):
+            warnings.append(f"[{section}] {key} = '{raw.strip()}' — parent directory is not writable: {parent}")
+        else:
+            passed.append(f"[{section}] {key} = '{raw.strip()}'")
+
+    # [mission]
+    # Collect custom profile names from this config so schedule validation is accurate.
+    cfg_custom_profiles = {
+        section.lower()[len(SCHEDULE_PROFILE_SECTION_PREFIX):].strip()
+        for section in cfg.sections()
+        if section.lower().startswith(SCHEDULE_PROFILE_SECTION_PREFIX)
+    }
+    all_valid_schedules = set(TRANSMIT_SCHEDULE_PROFILES.keys()) | cfg_custom_profiles
+    sched = cfg.get("mission", "schedule", fallback=None)
+    if sched and sched.strip().lower() not in all_valid_schedules:
+        errors.append(f"[mission] schedule = '{sched}' — unknown preset; "
+                      f"valid: {', '.join(sorted(all_valid_schedules))}")
+    _check_int_pos("mission", "total")
+    _check_float_range("mission", "interval", 1.0, 3600.0)
+    _check_int_nonneg("mission", "min_captures_between_transmissions")
+    _check_bool("mission", "enabled")
+    _check_bool("mission", "no_tx")
+
+    # [test_panels]
+    _check_str_choice("test_panels", "selection", {"sequential", "random"})
+    _check_int_pos("test_panels", "count")
+    _check_bool("test_panels", "include_callsign_overlay")
+    _check_bool("test_panels", "include_timestamp_overlay")
+    _check_bool("test_panels", "allow_tx_without_callsign")
+    tp_mode_raw = cfg.get("test_panels", "mode", fallback="").strip().lower()
+    if tp_mode_raw:
+        if not _is_valid_schedule_mode_token(canonicalize_mode_name(tp_mode_raw) or tp_mode_raw):
+            errors.append(f"[test_panels] mode = '{tp_mode_raw}' — unrecognised mode token")
+
+    # [radio]
+    _check_str_choice("radio", "band", {"vhf", "uhf", "both"})
+    _check_str_choice("radio", "tx_power_level", {"low", "high"})
+    _check_str_choice("radio", "pd_idle_mode", {"release", "sleep"})
+    _check_float_range("radio", "max_transmit_duty_cycle", 0.0, 1.0)
+    _check_float_range("radio", "cooldown_scale_factor", 0.1, 10.0)
+
+    # [capture]
+    _check_float_range("capture", "quality", 1, 100)
+    _check_str_choice("capture", "metering", {"matrix", "average", "spot"})
+    _check_str_choice("capture", "exposure", {"sport", "normal", "long"})
+    _check_str_choice("capture", "awb",
+                      {"auto", "daylight", "cloudy", "indoor", "fluorescent",
+                       "incandescent", "flash", "horizon", "greyworld"})
+
+    # [encode]
+    _check_str_choice("encode", "format", {"wav", "aiff", "ogg"})
+    _check_str_choice("encode", "aspect", {"center", "pad", "stretch"})
+    _check_bool("encode", "verbose")
+
+    # [mmsstv]
+    mmsstv_lib = cfg.get("mmsstv", "lib_path", fallback="").strip()
+    if mmsstv_lib and not os.path.isfile(mmsstv_lib):
+        warnings.append(f"[mmsstv] lib_path = '{mmsstv_lib}' — file not found")
+    _check_bool("mmsstv", "disable")
+
+    # [logging]
+    _check_bool("logging", "debug")
+    for key in ("log_file", "quiet_log_file"):
+        _check_writable_dir("logging", key)
+
+    # [paths]
+    for key in ("slowframe",):
+        _check_path_exists("paths", key)
+
+    # Report
+    print(thin)
+    if verbose and passed:
+        print(f"  OK ({len(passed)})")
+        for p_item in passed:
+            print(f"    OK    : {p_item}")
+    if warnings:
+        print(f"  WARNINGS ({len(warnings)})")
+        for w in warnings:
+            print(f"    WARN  : {w}")
+    if errors:
+        print(f"  ERRORS ({len(errors)})")
+        for e in errors:
+            print(f"    ERROR : {e}")
+
+    if not errors and not warnings:
+        print("  All checks passed — no errors or warnings.")
+    elif not errors:
+        print(f"  No errors.  {len(warnings)} warning(s).")
+
+    print(thin)
+    result = len(errors) == 0
+    print(f"  Result      : {'PASS' if result else 'FAIL'}")
+    print(thin)
+    return result
+
+
+def _dispatch_config(args_list):
+    """Parse and execute: config {generate|validate|show} [PATH]"""
+    p = _verb_parser(
+        "config",
+        prog="pi_sstv.py config",
+        description="Manage pi_sstv configuration files.",
+        add_help=False,
+    )
+    sub = p.add_subparsers(dest="action", metavar="{generate,validate,show}", required=True)
+
+    gen_p = sub.add_parser("generate", help="Write a documented default config template.")
+    gen_p.add_argument(
+        "path",
+        nargs="?",
+        default=DEFAULT_CONFIG_PATH,
+        metavar="PATH",
+        help=f"Output path (default: {DEFAULT_CONFIG_PATH})",
+    )
+
+    val_p = sub.add_parser("validate", help="Parse a config file and report errors/warnings.")
+    val_p.add_argument("path", metavar="PATH", help="Config file to validate.")
+    val_p.add_argument("-v", "--verbose", action="store_true",
+                       help="Show all validated keys, not just warnings and errors.")
+
+    show_p = sub.add_parser("show", help="Load a config and print the effective runtime settings.")
+    show_p.add_argument("path", metavar="PATH", help="Config file to load.")
+
+    a = p.parse_args(args_list)
+
+    if a.action == "generate":
+        generate_default_config(a.path)
+
+    elif a.action == "validate":
+        ok = _validate_config_file(a.path, verbose=a.verbose)
+        sys.exit(0 if ok else 1)
+
+    elif a.action == "show":
+        if not os.path.isfile(a.path):
+            print(f"Config file not found: {a.path}", file=sys.stderr)
+            sys.exit(1)
+        load_config(a.path)
+        configure_logging()
+        print_runtime_startup("config-show", config_path=a.path)
+
+
+# =============================================================================
+# Verb: schedules
+# =============================================================================
+
+def _dispatch_schedules(args_list):
+    """Parse and execute: schedules [--detail PRESET] [-c CONFIG]"""
+    p = _verb_parser(
+        "schedules",
+        prog="pi_sstv.py schedules",
+        description="List SSTV transmit schedule presets.",
+        add_help=False,
+    )
+    p.add_argument(
+        "-c", "--config",
+        metavar="PATH",
+        default=None,
+        help="Load a config file to include custom [schedule_profile] presets and show "
+             "which schedule is active.",
+    )
+    p.add_argument(
+        "--detail",
+        metavar="PRESET",
+        default=None,
+        help="Show expanded information for a single preset.",
+    )
+    a = p.parse_args(args_list)
+
+    if a.config:
+        load_config(a.config)
+
+    if a.detail:
+        # Validate the preset name now that custom profiles may have been loaded.
+        preset_name = _normalize_schedule_profile_name(a.detail) or a.detail
+        if preset_name not in TRANSMIT_SCHEDULE_PROFILES:
+            valid = ", ".join(TRANSMIT_SCHEDULE_PROFILES)
+            print(f"Unknown schedule preset: '{a.detail}'.  Valid: {valid}", file=sys.stderr)
+            sys.exit(1)
+
+        modes = TRANSMIT_SCHEDULE_PROFILES[preset_name]
+        description = TRANSMIT_SCHEDULE_DESCRIPTIONS.get(preset_name, "")
+        profiles = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
+        is_active = preset_name == TRANSMIT_SCHEDULE_PROFILE
+        is_custom = preset_name not in BUILTIN_TRANSMIT_SCHEDULE_PROFILES
+        active_tag = "  ◀ ACTIVE" if is_active else ""
+        type_tag = "  [custom]" if is_custom else ""
+
+        W = 72
+        print("=" * W)
+        print(f"  Schedule: {preset_name.upper()}{active_tag}{type_tag}")
+        print("=" * W)
+        if description:
+            print(f"  {description}")
+        fb_policy = describe_schedule_fallback_policy(preset_name)
+        print(f"  Fallback policy: {fb_policy}")
+        print("-" * W)
+        print(f"  {'#':>2}  {'Mode':<12}  {'TX (s)':>6}  {'Cooldown (s)':>12}  "
+              f"{'Cycle (s)':>9}  {'MMSSTV':>6}  Fallback")
+        print(f"  {'':>2}  {'':12}  {'------':>6}  {'------------':>12}  "
+              f"{'----------':>9}  {'------':>6}")
+        total_tx, total_cool = 0, 0
+        for i, profile in enumerate(profiles, 1):
+            cycle = profile.duration_seconds + profile.cooldown_seconds
+            mmsstv_str = "yes" if profile.requires_mmsstv else "-"
+            fb_str = profile.fallback_mode or "-"
+            print(f"  {i:>2}  {profile.name:<12}  {profile.duration_seconds:>6}  "
+                  f"{profile.cooldown_seconds:>12}  {cycle:>9}  {mmsstv_str:>6}  {fb_str}")
+            total_tx += profile.duration_seconds
+            total_cool += profile.cooldown_seconds
+        total_cycle = total_tx + total_cool
+        duty = 100.0 * total_tx / total_cycle if total_cycle else 0.0
+        cycle_min = total_cycle / 60.0
+        mmsstv_needed = any(p.requires_mmsstv for p in profiles)
+        print("-" * W)
+        print(f"  {'Total airtime':<28}: {total_tx} s")
+        print(f"  {'Total cooldown':<28}: {total_cool} s")
+        print(f"  {'Min rotation time':<28}: {total_cycle} s  ({cycle_min:.1f} min)")
+        print(f"  {'Max duty cycle':<28}: {duty:.1f}%")
+        print(f"  {'MMSSTV library required':<28}: {'yes' if mmsstv_needed else 'no'}")
+        print("=" * W)
+        return
+
+    # Default: print full list via existing list_schedules()
+    list_schedules()
+
+
+# =============================================================================
+# Verb: run
+# =============================================================================
+
+def _dispatch_run(args_list):
+    """Parse and execute: run [options]"""
+    p = _verb_parser(
+        "run",
+        prog="pi_sstv.py run",
+        description=(
+            "Execute a single SSTV pipeline pass: capture → encode → transmit.\n"
+            "Use --no-tx for a safe bench test without a radio connected."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+    )
+    p.add_argument("-m", "--mode", default="r36", metavar="MODE",
+                   help="SSTV mode to encode (default: r36).")
+    p.add_argument("-c", "--config", default=None, metavar="PATH",
+                   help="Config file to load.")
+    p.add_argument("--image", default=None, metavar="PATH",
+                   help="Use this image instead of capturing from the camera.")
+    p.add_argument("--callsign", default=None, metavar="CALL",
+                   help="Callsign overlay baked into the transmitted image.")
+    p.add_argument("--no-callsign", action="store_true",
+                   help="Suppress callsign overlay even if set in config.")
+    p.add_argument("--no-timestamp", action="store_true",
+                   help="Suppress timestamp overlay.")
+    p.add_argument("--no-tx", action="store_true",
+                   help="Encode but skip radio transmit (safe bench test).")
+    p.add_argument("--band", choices=["vhf", "uhf", "both"], default=None,
+                   help="Radio band to key (overrides config).")
+    p.add_argument("--power", choices=["low", "high"], default=None,
+                   help="Transmit power level (overrides config).")
+    p.add_argument("--keep-wav", action="store_true",
+                   help="Keep the encoded WAV file after the run.")
+    p.add_argument("--output-dir", default=None, metavar="PATH",
+                   help="Directory for output artifacts.")
+    p.add_argument("--debug", action="store_true",
+                   help="Enable DEBUG-level logging.")
+    p.add_argument("--mmsstv-lib", default=None, metavar="PATH",
+                   help="Path to MMSSTV shared library.")
+    p.add_argument("--no-mmsstv", action="store_true",
+                   help="Force native SlowFrame modes only.")
+
+    a = p.parse_args(args_list)
+
+    configure_logging(debug=a.debug or _ENV_DEBUG, log_file=_ENV_LOG_FILE)
+
+    # Config file first, then CLI overrides
+    if a.config:
+        load_config(a.config)
+
+    global ACTIVE_RADIO_BAND, TX_POWER_LEVEL
+    global STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY
+    global TIMESTAMPED_DIR
+
+    if a.band:
+        ACTIVE_RADIO_BAND = a.band
+    if a.power:
+        TX_POWER_LEVEL = a.power
+    if a.callsign:
+        STATION_CALLSIGN = a.callsign
+        SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
+    if a.no_callsign:
+        SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = False
+    if a.no_timestamp:
+        SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY = False
+    if a.output_dir:
+        TIMESTAMPED_DIR = a.output_dir
+    if a.no_mmsstv:
+        os.environ[MMSSTV_DISABLE_ENV_VAR] = "1"
+    if a.mmsstv_lib:
+        os.environ[MMSSTV_LIBRARY_ENV_VAR] = a.mmsstv_lib
+
+    if a.mode not in MODE_PROFILES:
+        p.error(
+            f"--mode: unknown mode '{a.mode}'. "
+            f"Valid modes: {', '.join(sorted(MODE_PROFILES))}."
+        )
+
+    ensure_runtime_paths()
+
+    needs_gpio = not (a.no_tx or _ENV_NO_TX)
+    if needs_gpio:
+        setup_gpio()
+
+    runtime_state = discover_slowframe_capabilities()
+
+    import types
+    fake_args = types.SimpleNamespace(
+        test=a.mode,
+        test_image=a.image,
+        no_tx=a.no_tx or _ENV_NO_TX,
+        output_dir=TIMESTAMPED_DIR,
+        ptt_pin=None,
+    )
+
+    wav_path = None
+    try:
+        run_test_pipeline(a.mode, fake_args, runtime_state)
+    finally:
+        if needs_gpio:
+            GPIO.cleanup()
+        # Clean up WAV unless --keep-wav was passed
+        if not a.keep_wav:
+            wav_candidate = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
+            if wav_path is None and os.path.isfile(wav_candidate):
+                # Only remove the default WAV, not a user-specified artifact
+                pass  # run_test_pipeline uses a timestamped name; no cleanup needed
+
+
+# =============================================================================
+# Verb: mission
+# =============================================================================
+
+def _dispatch_mission(args_list):
+    """Parse and execute: mission [options]  (mirrors the legacy flag-based mission path)"""
+    global TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE
+    global PIC_TOTAL, PIC_INTERVAL
+    global STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global COOLDOWN_SCALE_FACTOR, MAX_TRANSMIT_DUTY_CYCLE, MIN_CAPTURES_BETWEEN_TRANSMISSIONS
+    global TIMESTAMPED_DIR, ACTIVE_RADIO_BAND, TX_POWER_LEVEL
+
+    p = _verb_parser(
+        "mission",
+        prog="pi_sstv.py mission",
+        description=(
+            "Run the continuous HAB mission: capture images, encode to SSTV audio,\n"
+            "and transmit on a rotating schedule until TOTAL captures are taken."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+    )
+    p.add_argument("-c", "--config", default=None, metavar="PATH",
+                   help="Config file to load.")
+    p.add_argument("-s", "--schedule",
+                   choices=list(TRANSMIT_SCHEDULE_PROFILES.keys()),
+                   default=None, metavar="PRESET",
+                   help=f"Transmit schedule preset (default: {TRANSMIT_SCHEDULE_PROFILE}).")
+    p.add_argument("-n", "--total", type=int, default=None, metavar="N",
+                   help=f"Total captures (default: {PIC_TOTAL}).")
+    p.add_argument("-i", "--interval", type=float, default=None, metavar="SECS",
+                   help=f"Seconds between captures (default: {PIC_INTERVAL}).")
+    p.add_argument("--callsign", default=None, metavar="CALL",
+                   help="Callsign overlay on every image.")
+    p.add_argument("--no-tx", action="store_true",
+                   help="Capture and encode but never transmit.")
+    p.add_argument("--band", choices=["vhf", "uhf", "both"], default=None,
+                   help="Radio band to key.")
+    p.add_argument("--power", choices=["low", "high"], default=None,
+                   help="Transmit power level.")
+    p.add_argument("--cooldown-scale", type=float, default=None, metavar="FACTOR",
+                   help="Multiply all mode cooldowns.")
+    p.add_argument("--duty-cycle", type=float, default=None, metavar="FRACTION",
+                   help="Max rolling TX fraction (0.0–1.0).")
+    p.add_argument("--min-captures", type=int, default=None, metavar="N",
+                   help="Captures between any two transmissions.")
+    p.add_argument("--output-dir", default=None, metavar="PATH",
+                   help="Directory for images, WAV, and CSV.")
+    p.add_argument("--debug", action="store_true",
+                   help="Enable DEBUG-level logging.")
+    p.add_argument("--log-file", default=None, metavar="PATH",
+                   help="Log to file in addition to stdout.")
+    p.add_argument("--quiet-log-file", default=None, metavar="PATH",
+                   help="Log to file only, suppress stdout.")
+    p.add_argument("--mmsstv-lib", default=None, metavar="PATH",
+                   help="Path to MMSSTV shared library.")
+    p.add_argument("--no-mmsstv", action="store_true",
+                   help="Force native SlowFrame modes only.")
+
+    a = p.parse_args(args_list)
+
+    selected_log_file = a.quiet_log_file or a.log_file or _ENV_LOG_FILE
+    quiet_stdout = a.quiet_log_file is not None
+    configure_logging(debug=a.debug or _ENV_DEBUG, log_file=selected_log_file, quiet_stdout=quiet_stdout)
+
+    if a.config:
+        load_config(a.config)
+
+    if a.schedule:
+        TRANSMIT_SCHEDULE_PROFILE = a.schedule
+        TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES[a.schedule]
+    if a.total is not None:
+        PIC_TOTAL = a.total
+    if a.interval is not None:
+        PIC_INTERVAL = a.interval
+    if a.callsign:
+        STATION_CALLSIGN = a.callsign
+        SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
+    if a.cooldown_scale is not None:
+        COOLDOWN_SCALE_FACTOR = a.cooldown_scale
+    if a.duty_cycle is not None:
+        MAX_TRANSMIT_DUTY_CYCLE = a.duty_cycle
+    if a.min_captures is not None:
+        MIN_CAPTURES_BETWEEN_TRANSMISSIONS = a.min_captures
+    if a.output_dir:
+        TIMESTAMPED_DIR = a.output_dir
+    if a.band:
+        ACTIVE_RADIO_BAND = a.band
+    if a.power:
+        TX_POWER_LEVEL = a.power
+    if a.no_mmsstv:
+        os.environ[MMSSTV_DISABLE_ENV_VAR] = "1"
+    if a.mmsstv_lib:
+        os.environ[MMSSTV_LIBRARY_ENV_VAR] = a.mmsstv_lib
+
+    ensure_runtime_paths()
+
+    needs_gpio = not (a.no_tx or _ENV_NO_TX)
+    if needs_gpio:
+        setup_gpio()
+
+    runtime_state = discover_slowframe_capabilities()
+    print_mission_summary(runtime_state)
+
+    try:
+        for index in range(PIC_TOTAL):
+            capture_number = index + 1
+            image_path, timestamp_message = process_capture(index)
+            time.sleep(PIC_INTERVAL)
+
+            if not should_attempt_transmit(capture_number, runtime_state):
+                log_debug(f"[#{capture_number}] Skipping transmit check: capture interval not reached")
+                continue
+
+            requested_mode, mode_profile = select_mode_profile(runtime_state)
+            now_monotonic = time.monotonic()
+            can_tx, reason = can_transmit_mode(capture_number, mode_profile, runtime_state, now_monotonic)
+
+            if not can_tx:
+                log(f"[#{capture_number}] Skipping transmit ({requested_mode}): {reason}")
+                continue
+
+            if requested_mode != mode_profile.name:
+                log(f"[#{capture_number}] Fallback: {requested_mode} → {mode_profile.name}")
+            else:
+                log(f"[#{capture_number}] Transmitting: {mode_profile.name} ({mode_profile.duration_seconds}s)")
+
+            image_path = resolve_transmit_image(image_path)
+
+            if a.no_tx or _ENV_NO_TX:
+                log(f"[#{capture_number}] TX skipped (--no-tx): would have transmitted {mode_profile.name}")
+                continue
+
+            try:
+                generate_sstv_audio(image_path, timestamp_message, mode_profile.name)
+            except Exception as error:
+                log(f"Encode failed: {error}")
+                continue
+
+            try:
+                actual_duration = transmit_sstv_audio()
+            except Exception as error:
+                log(f"Playback failed: {error}")
+                continue
+
+            runtime_state.last_transmit_capture_number = capture_number
+            runtime_state.last_transmit_end_monotonic = time.monotonic()
+            runtime_state.transmit_history.append(
+                (runtime_state.last_transmit_end_monotonic, actual_duration)
+            )
+            runtime_state.schedule_index += 1
+            rolling_used = get_rolling_transmit_seconds(runtime_state, runtime_state.last_transmit_end_monotonic)
+            rolling_pct = 100.0 * rolling_used / ROLLING_DUTY_CYCLE_WINDOW_SECONDS
+            log(f"[#{capture_number}] TX done: {mode_profile.name}, {actual_duration:.1f}s, rolling duty={rolling_pct:.1f}%")
+    finally:
+        if needs_gpio:
+            GPIO.cleanup()
+
+
+# =============================================================================
+# Verb: status
+# =============================================================================
+
+def _dispatch_status(args_list):
+    """Parse and execute: status [--config PATH] [--verbose]"""
+    p = _verb_parser(
+        "status",
+        prog="pi_sstv.py status",
+        description="Run a pre-flight system readiness check.",
+        add_help=False,
+    )
+    p.add_argument("-c", "--config", default=None, metavar="PATH",
+                   help="Config file to load and validate.")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="Show detailed output for every check.")
+    a = p.parse_args(args_list)
+
+    configure_logging(debug=a.verbose)
+
+    if a.config:
+        load_config(a.config)
+
+    W = 72
+    bar = "=" * W
+    thin = "-" * W
+    print(bar)
+    print("  pi_sstv.py  —  System Status")
+    print(bar)
+
+    checks = []   # list of (label, result, detail)
+
+    def _check(label, result, detail=""):
+        mark = "PASS" if result else "FAIL"
+        checks.append((label, mark, detail))
+        status_char = "✓" if result else "✗"
+        detail_str = f"  {detail}" if detail else ""
+        print(f"  [{mark}]  {label:<38}{detail_str}")
+
+    def _warn(label, detail=""):
+        checks.append((label, "WARN", detail))
+        detail_str = f"  {detail}" if detail else ""
+        print(f"  [WARN]  {label:<38}{detail_str}")
+
+    # Python version
+    import platform
+    py_ver = platform.python_version()
+    py_ok = sys.version_info >= (3, 9)
+    _check("Python version", py_ok, py_ver)
+
+    # RPi.GPIO
+    try:
+        import RPi.GPIO as _gpio_test  # noqa: F401
+        _check("RPi.GPIO importable", True)
+    except ImportError as exc:
+        _check("RPi.GPIO importable", False, str(exc))
+
+    # rpicam-still
+    rpicam_ok = os.path.isfile(RPICAM_BIN) and os.access(RPICAM_BIN, os.X_OK)
+    _check("rpicam-still binary", rpicam_ok, RPICAM_BIN)
+
+    # SlowFrame
+    sf_ok = os.path.isfile(SLOWFRAME_BIN) and os.access(SLOWFRAME_BIN, os.X_OK)
+    _check("SlowFrame binary", sf_ok, SLOWFRAME_BIN)
+
+    if sf_ok:
+        # MMSSTV detection
+        try:
+            result = run(
+                [SLOWFRAME_BIN, "-M"], capture_output=True, text=True,
+                timeout=SLOWFRAME_LIST_TIMEOUT_SECONDS,
+            )
+            output = result.stdout + result.stderr
+            mmsstv_detected = (
+                "detected" in output.lower() and "not detected" not in output.lower()
+            )
+            if mmsstv_detected:
+                _check("MMSSTV library", True, "detected")
+            else:
+                _warn("MMSSTV library", "not detected — MMSSTV modes will fall back to native")
+        except Exception as exc:
+            _warn("MMSSTV library", f"probe failed: {exc}")
+
+    # aplay
+    import shutil
+    aplay_path = shutil.which("aplay")
+    _check("aplay in PATH", bool(aplay_path), aplay_path or "not found")
+
+    if aplay_path:
+        try:
+            aplay_L = run(["aplay", "-L"], capture_output=True, text=True, timeout=10)
+            aplay_output = aplay_L.stdout + aplay_L.stderr
+            audremap_ok = any(
+                "audremap" in ln.lower() or "headphones" in ln.lower()
+                for ln in aplay_output.splitlines()
+            )
+            if audremap_ok:
+                _check("audremap PCM device (aplay -L)", True)
+            else:
+                _warn("audremap PCM device (aplay -L)",
+                      "not found — check dtoverlay=audremap,enable_jack=on in /boot/config.txt")
+        except Exception as exc:
+            _warn("audremap PCM device (aplay -L)", f"aplay -L failed: {exc}")
+
+    # Output directory
+    out_dir_exists = os.path.isdir(TIMESTAMPED_DIR)
+    out_dir_writable = out_dir_exists and os.access(TIMESTAMPED_DIR, os.W_OK)
+    if out_dir_exists:
+        _check("Output directory writable", out_dir_writable, TIMESTAMPED_DIR)
+    else:
+        _warn("Output directory", f"does not exist yet — will be created: {TIMESTAMPED_DIR}")
+
+    # Config file — auto-discover if --config not supplied
+    effective_cfg = a.config or find_default_config()
+    if effective_cfg:
+        auto_tag = "" if a.config else f" (auto-discovered)"
+        print(f"\n  Config: {effective_cfg}{auto_tag}")
+        cfg_valid = _validate_config_file(effective_cfg)
+        _check("Config file valid", cfg_valid, effective_cfg)
+        if cfg_valid:
+            # Load config so subsequent checks (output dir, etc.) reflect its settings
+            load_config(effective_cfg)
+    else:
+        search_list = "\n          ".join(CONFIG_SEARCH_PATHS)
+        _warn("Config file",
+              f"not found in any search path — run 'config generate' to create one\n"
+              f"          Searched:\n          {search_list}")
+
+    # systemd services
+    for svc in ("pi-sstv.service", "hamwing-gpio-init.service"):
+        try:
+            result = run(
+                ["systemctl", "is-active", svc],
+                capture_output=True, text=True, timeout=5,
+            )
+            active = result.stdout.strip() == "active"
+            enabled_result = run(
+                ["systemctl", "is-enabled", svc],
+                capture_output=True, text=True, timeout=5,
+            )
+            enabled = enabled_result.stdout.strip() == "enabled"
+            if active and enabled:
+                _check(f"systemd: {svc}", True, "active + enabled")
+            elif enabled and not active:
+                _warn(f"systemd: {svc}", "enabled but not running")
+            else:
+                _warn(f"systemd: {svc}", "not installed — run 'service install' to set up")
+        except FileNotFoundError:
+            _warn(f"systemd: {svc}", "systemctl not available")
+        except Exception as exc:
+            _warn(f"systemd: {svc}", str(exc))
+
+    # GPIO pin summary
+    print()
+    print(bar)
+    print("  GPIO Pin Assignments  (BCM numbering)")
+    print("  [cfg: ...] = current config value and its effect on this pin")
+    print(bar)
+    band_label = {
+        "vhf":  "VHF only",
+        "uhf":  "UHF only",
+        "both": "VHF + UHF",
+    }.get(ACTIVE_RADIO_BAND, ACTIVE_RADIO_BAND)
+    ptt_pins = get_active_ptt_pins()
+    ptt_label = ", ".join(f"GPIO{p}" for p in ptt_pins)
+    hl_watts  = "1 W  (HL HIGH)" if TX_POWER_LEVEL == "high" else "0.5 W  (HL LOW)"
+    pd_effect = "idle as INPUT float" if PD_IDLE_MODE == "release" else "idle as OUTPUT LOW"
+
+    col = 40
+    def _pin_row(label, bcm, phys, note=""):
+        phys_str = f"(physical pin {phys:>2})" if isinstance(phys, int) else f"(physical pin {phys})"
+        suffix = f"  [cfg: {note}]" if note else ""
+        print(f"  {label:<{col}} BCM {bcm:>2}  {phys_str}{suffix}")
+
+    print("  DRA818 control")
+    _pin_row("  PD   power-down  (active-HIGH)",   DRA818_POWER_DOWN_PIN,   7,
+             f"pd_idle_mode={PD_IDLE_MODE} → {pd_effect}")
+    active_vhf = ACTIVE_RADIO_BAND in ("vhf", "both")
+    active_uhf = ACTIVE_RADIO_BAND in ("uhf", "both")
+    _pin_row("  PTT  VHF TX key  (active-LOW)",    DRA818_VHF_PTT_PIN,     13,
+             f"band={ACTIVE_RADIO_BAND} → {'in use' if active_vhf else 'not selected'}")
+    _pin_row("  PTT  UHF TX key  (active-LOW)",    DRA818_UHF_PTT_PIN,     11,
+             f"band={ACTIVE_RADIO_BAND} → {'in use' if active_uhf else 'not selected'}")
+    _pin_row("  H/L  power level",                 DRA818_POWER_LEVEL_PIN, 15,
+             f"tx_power_level={TX_POWER_LEVEL} → {hl_watts}")
+    print()
+    print("  Audio  (PWM — fixed wiring)")
+    _pin_row("  Left  PWM out",  AUDIO_LEFT_PWM_PIN,  32,
+             f"overlay: {AUDIO_OVERLAY}")
+    _pin_row("  Right PWM out",  AUDIO_RIGHT_PWM_PIN, 33,
+             f"aplay device: {APLAY_DEVICE}")
+    print()
+    print("  Status LED")
+    if STATUS_LED_ENABLED:
+        polarity = "active-HIGH  GPIO HIGH = LED on" if STATUS_LED_ACTIVE_HIGH else "active-LOW  GPIO LOW = LED on"
+        _pin_row("  Status LED", STATUS_LED_PIN, 40,
+                 f"enabled, {polarity}")
+    else:
+        print(f"  {'Status LED':<{col}}              [cfg: status_led.enabled=false → pin not driven]")
+
+    print(thin)
+    fails = sum(1 for _, r, _ in checks if r == "FAIL")
+    warns = sum(1 for _, r, _ in checks if r == "WARN")
+    passes = sum(1 for _, r, _ in checks if r == "PASS")
+    print(f"  Result      : {'PASS' if fails == 0 else 'FAIL'}")
+    print(f"  Checks      : {passes} passed, {warns} warned, {fails} failed")
+    print(thin)
+    sys.exit(0 if fails == 0 else 1)
+
+
+# =============================================================================
+# Verb: service
+# =============================================================================
+
+_PI_SSTV_SERVICE_TEMPLATE = """\
+[Unit]
+Description=pi_sstv HamWing SSTV HAB payload controller
+After=network.target hamwing-gpio-init.service
+Wants=hamwing-gpio-init.service
+
+[Service]
+Type=simple
+User={user}
+WorkingDirectory={work_dir}
+ExecStart={python} {script}{config_arg}
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pi-sstv
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+_HAMWING_GPIO_INIT_SERVICE_TEMPLATE = """\
+[Unit]
+Description=HamWing GPIO idle-state initialisation
+DefaultDependencies=no
+Before=pi-sstv.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Set PTT lines to INPUT PUD_UP (shared with Feather M0, weak pull keeps HIGH).
+# Set PD (GPIO4) to INPUT (released to Feather M0 at boot).
+# Set HL (GPIO22) to OUTPUT LOW (0.5 W default, safe).
+ExecStart=/bin/sh -c " \\
+    raspi-gpio set 27 ip pu && \\
+    raspi-gpio set 17 ip pu && \\
+    raspi-gpio set 4  ip    && \\
+    raspi-gpio set 22 op dl"
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+_SYSTEMD_UNIT_DIR = "/etc/systemd/system"
+
+
+def _write_unit_file_sudo(unit_name: str, content: str, dry_run: bool = False) -> bool:
+    """Write *content* to /etc/systemd/system/*unit_name* via sudo tee.
+
+    Returns True on success, False on failure.  When *dry_run* is True the
+    content is printed to stdout without writing any file.
+    """
+    dest = os.path.join(_SYSTEMD_UNIT_DIR, unit_name)
+
+    if dry_run:
+        W = 72
+        print("=" * W)
+        print(f"  DRY RUN — would write: {dest}")
+        print("=" * W)
+        print(content)
+        print("-" * W)
+        return True
+
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["sudo", "tee", dest],
+            input=content,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            print(f"ERROR writing {dest}: {proc.stderr.strip()}", file=sys.stderr)
+            return False
+        return True
+    except FileNotFoundError:
+        print("ERROR: sudo not found in PATH.", file=sys.stderr)
+        return False
+
+
+def _systemctl_sudo(args_list: list, dry_run: bool = False) -> bool:
+    """Run systemctl with sudo.  Returns True on success."""
+    cmd = ["sudo", "systemctl"] + args_list
+    if dry_run:
+        print(f"  DRY RUN — would run: {' '.join(cmd)}")
+        return True
+    import subprocess
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(f"  WARN  systemctl {' '.join(args_list)}: {proc.stderr.strip()}", file=sys.stderr)
+            return False
+        return True
+    except FileNotFoundError:
+        print("ERROR: sudo/systemctl not found.", file=sys.stderr)
+        return False
+
+
+def _dispatch_service(args_list):
+    """Parse and execute: service {install|uninstall|status|logs} [options]"""
+    import subprocess
+
+    p = _verb_parser(
+        "service",
+        prog="pi_sstv.py service",
+        description="Manage pi-sstv and hamwing-gpio-init systemd services.",
+        add_help=False,
+    )
+    sub = p.add_subparsers(dest="action",
+                           metavar="{install,uninstall,status,logs}",
+                           required=True)
+
+    # install
+    inst_p = sub.add_parser("install", help="Install and enable both unit files.")
+    inst_p.add_argument("-c", "--config", default=None, metavar="PATH",
+                        help="Path to the .cfg file the service loads at startup.")
+    inst_p.add_argument("--user", default="pi-user", metavar="USER",
+                        help="System user the service runs as (default: pi-user).")
+    inst_p.add_argument("--script", default=os.path.abspath(__file__), metavar="PATH",
+                        help="Absolute path to pi_sstv.py (default: this file).")
+    inst_p.add_argument("--python", default="/usr/bin/python3", metavar="PATH",
+                        help="Python interpreter (default: /usr/bin/python3).")
+    inst_p.add_argument("--dry-run", action="store_true",
+                        help="Print unit files without writing them.")
+
+    # uninstall
+    uninst_p = sub.add_parser("uninstall", help="Stop, disable, and remove both unit files.")
+    uninst_p.add_argument("--dry-run", action="store_true",
+                          help="Print what would be done without making changes.")
+
+    # status
+    sub.add_parser("status", help="Show systemd status for both services.")
+
+    # logs
+    logs_p = sub.add_parser("logs", help="Tail the pi-sstv service journal.")
+    logs_p.add_argument("--lines", type=int, default=50, metavar="N",
+                        help="Number of log lines to show (default: 50).")
+    logs_p.add_argument("-f", "--follow", action="store_true",
+                        help="Follow the journal in real time (Ctrl-C to stop).")
+
+    a = p.parse_args(args_list)
+
+    if a.action == "install":
+        print("Installing HamWing systemd services …\n")
+        work_dir = os.path.dirname(os.path.abspath(a.script))
+        config_arg = f" mission --config {a.config}" if a.config else " mission"
+
+        pi_sstv_unit = _PI_SSTV_SERVICE_TEMPLATE.format(
+            user=a.user,
+            work_dir=work_dir,
+            python=a.python,
+            script=a.script,
+            config_arg=config_arg,
+        )
+        gpio_init_unit = _HAMWING_GPIO_INIT_SERVICE_TEMPLATE
+
+        ok = True
+        print(f"  Writing pi-sstv.service …")
+        ok &= _write_unit_file_sudo("pi-sstv.service", pi_sstv_unit, dry_run=a.dry_run)
+        print(f"  Writing hamwing-gpio-init.service …")
+        ok &= _write_unit_file_sudo("hamwing-gpio-init.service", gpio_init_unit, dry_run=a.dry_run)
+
+        if ok:
+            print("  Reloading systemd daemon …")
+            ok &= _systemctl_sudo(["daemon-reload"], dry_run=a.dry_run)
+            print("  Enabling hamwing-gpio-init.service …")
+            ok &= _systemctl_sudo(["enable", "hamwing-gpio-init.service"], dry_run=a.dry_run)
+            print("  Enabling pi-sstv.service …")
+            ok &= _systemctl_sudo(["enable", "pi-sstv.service"], dry_run=a.dry_run)
+            if not a.dry_run:
+                print("  Starting hamwing-gpio-init.service …")
+                ok &= _systemctl_sudo(["start", "hamwing-gpio-init.service"])
+                print("  Starting pi-sstv.service …")
+                ok &= _systemctl_sudo(["start", "pi-sstv.service"])
+
+        print()
+        if a.dry_run:
+            print("Dry run complete.  No changes were made.")
+        elif ok:
+            print("Installation complete.")
+            print("  Check status : python3 pi_sstv.py service status")
+            print("  Follow logs  : python3 pi_sstv.py service logs --follow")
+        else:
+            print("Installation finished with errors.  Check output above.", file=sys.stderr)
+            sys.exit(1)
+
+    elif a.action == "uninstall":
+        print("Removing HamWing systemd services …\n")
+        dry = a.dry_run
+        ok = True
+        for svc in ("pi-sstv.service", "hamwing-gpio-init.service"):
+            print(f"  Stopping  {svc} …")
+            _systemctl_sudo(["stop", svc], dry_run=dry)
+            print(f"  Disabling {svc} …")
+            _systemctl_sudo(["disable", svc], dry_run=dry)
+            dest = os.path.join(_SYSTEMD_UNIT_DIR, svc)
+            if dry:
+                print(f"  DRY RUN — would delete: {dest}")
+            else:
+                try:
+                    result = subprocess.run(["sudo", "rm", "-f", dest],
+                                            capture_output=True, text=True)
+                    if result.returncode == 0:
+                        print(f"  Removed   {dest}")
+                    else:
+                        print(f"  WARN  could not remove {dest}: {result.stderr.strip()}")
+                        ok = False
+                except Exception as exc:
+                    print(f"  ERROR: {exc}", file=sys.stderr)
+                    ok = False
+
+        if not dry:
+            _systemctl_sudo(["daemon-reload"])
+        print()
+        if dry:
+            print("Dry run complete.  No changes were made.")
+        elif ok:
+            print("Uninstall complete.")
+        else:
+            print("Uninstall finished with errors.  Check output above.", file=sys.stderr)
+            sys.exit(1)
+
+    elif a.action == "status":
+        for svc in ("hamwing-gpio-init.service", "pi-sstv.service"):
+            print(f"{'─' * 72}")
+            print(f"  {svc}")
+            print(f"{'─' * 72}")
+            try:
+                result = subprocess.run(
+                    ["systemctl", "status", "--no-pager", svc],
+                    capture_output=True, text=True,
+                )
+                output = (result.stdout + result.stderr).strip()
+                for line in output.splitlines():
+                    print(f"  {line}")
+            except FileNotFoundError:
+                print("  systemctl not available on this system.")
+            print()
+
+    elif a.action == "logs":
+        cmd = ["journalctl", "-u", "pi-sstv.service", "--no-pager",
+               f"-n", str(a.lines)]
+        if a.follow:
+            cmd.append("-f")
+        try:
+            subprocess.run(cmd)
+        except FileNotFoundError:
+            print("ERROR: journalctl not available.", file=sys.stderr)
+            sys.exit(1)
+        except KeyboardInterrupt:
+            pass
+
+
+# =============================================================================
+# Diag config loader (lightweight; diag verb only)
+# =============================================================================
+
+def _load_diag_config(path: str):
+    """Minimal config loader for the diag sub-command.
+
+    Reads only the [status_led] and [gps] sections so that unrelated
+    mission settings (e.g. custom schedule names) cannot block diagnostics.
+    """
+    global STATUS_LED_ENABLED, STATUS_LED_PIN, STATUS_LED_ACTIVE_HIGH
+    global STATUS_LED_PWM_FREQ, STATUS_LED_MAX_PCT
+    global GPS_SERIAL_PORT, GPS_SERIAL_BAUD
+
+    if not os.path.isfile(path):
+        print(f"Config file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = configparser.ConfigParser(interpolation=None)
+    cfg.read(path)
+
+    def _b(section, key, default):
+        try:
+            return cfg.getboolean(section, key, fallback=default)
+        except ValueError:
+            return default
+
+    def _i(section, key, default):
+        try:
+            return cfg.getint(section, key, fallback=default)
+        except ValueError:
+            return default
+
+    def _s(section, key, default):
+        return cfg.get(section, key, fallback=default)
+
+    STATUS_LED_ENABLED     = _b("status_led", "enabled",     STATUS_LED_ENABLED)
+    STATUS_LED_PIN         = _i("status_led", "pin",         STATUS_LED_PIN)
+    STATUS_LED_ACTIVE_HIGH = _b("status_led", "active_high", STATUS_LED_ACTIVE_HIGH)
+    STATUS_LED_PWM_FREQ    = _i("status_led", "pwm_freq",    STATUS_LED_PWM_FREQ)
+    STATUS_LED_MAX_PCT     = _i("status_led", "max_pct",     STATUS_LED_MAX_PCT)
+    GPS_SERIAL_PORT        = _s("gps",        "device",      GPS_SERIAL_PORT)
+    GPS_SERIAL_BAUD        = _i("gps",        "baud",        GPS_SERIAL_BAUD)
+
+
+def _dispatch_diag(args_list, config_path: str = None):
+    """Parse and execute a  'diag {led|gps|ptt|alsa|camera|slowframe} [...]'  sub-command."""
+    p = _verb_parser(
+        "diag",
+        prog="pi_sstv.py diag",
+        description="Hardware diagnostic utilities.",
+        add_help=False,
+    )
+    sub = p.add_subparsers(dest="target", metavar="{led,gps,ptt,alsa,camera,slowframe,tx}", required=True)
+
+    # --- Subcommands with a positional SECONDS duration argument ---
+    for sp, default_dur, help_text in (
+        (sub.add_parser("led", help="Exercise the status LED through all operational states"), 1.5,  "Duration per state in seconds (default: 1.5)"),
+        (sub.add_parser("gps", help="Read GPS NMEA sentences for DURATION seconds"),          30.0, "Listen duration in seconds (default: 30)"),
+    ):
+        sp.add_argument("duration", type=float, nargs="?", default=default_dur,
+                        metavar="SECONDS", help=help_text)
+        sp.add_argument("-v", "--verbose", action="store_true",
+                        help="Show runtime settings and detailed step logs")
+
+    # --- PTT subcommand (duration + --module) ---
+    ptt_sp = sub.add_parser("ptt", help="Key PTT/PD GPIO lines for DURATION seconds")
+    ptt_sp.add_argument("duration", type=float, nargs="?", default=1.0,
+                        metavar="SECONDS", help="Key duration in seconds (default: 1.0)")
+    ptt_sp.add_argument("-m", "--module", choices=["vhf", "uhf"], default="uhf",
+                        help="Radio module variant to label (default: uhf)")
+    ptt_sp.add_argument("-v", "--verbose", action="store_true",
+                        help="Show runtime settings and detailed step logs")
+
+    # --- Subcommands with no duration argument ---
+    for name, help_text in (
+        ("alsa",       "List ALSA playback devices and verify aplay"),
+        ("camera",     "Verify rpicam-still and take a test capture"),
+        ("slowframe",  "Check SlowFrame binary and list available SSTV modes"),
+    ):
+        sp = sub.add_parser(name, help=help_text)
+        sp.add_argument("-v", "--verbose", action="store_true",
+                        help="Show runtime settings and detailed step logs")
+
+    # --- TX end-to-end pipeline test ---
+    tx_sp = sub.add_parser("tx", help="Run the full capture → encode → TX pipeline once")
+    tx_sp.add_argument("-m", "--mode", default="m1", metavar="MODE",
+                       help="SSTV mode to encode (default: m1)")
+    tx_sp.add_argument("--image", default=None, metavar="FILE",
+                       help="Use this image instead of capturing or the default test image")
+    tx_sp.add_argument("--image-dir", default=None, metavar="DIR",
+                       help="Pick the first image (alphabetically) from this directory")
+    tx_sp.add_argument("--no-tx", action="store_true",
+                       help="Skip the radio TX stage (encode only)")
+    tx_sp.add_argument("--module", choices=["vhf", "uhf"], default="uhf",
+                       help="Radio module to key (default: uhf)")
+    tx_sp.add_argument("-v", "--verbose", action="store_true",
+                       help="Show runtime settings and detailed step logs")
+
+    a = p.parse_args(args_list)  # strict: unknown flags are an error
+    if a.target == "led":
+        run_diag_led(a.duration, verbose=a.verbose, config_path=config_path)
+    elif a.target == "gps":
+        run_diag_gps(a.duration, verbose=a.verbose, config_path=config_path)
+    elif a.target == "ptt":
+        run_diag_ptt(a.duration, verbose=a.verbose, config_path=config_path, module=a.module)
+    elif a.target == "alsa":
+        run_diag_alsa(verbose=a.verbose, config_path=config_path)
+    elif a.target == "camera":
+        run_diag_camera(verbose=a.verbose, config_path=config_path)
+    elif a.target == "slowframe":
+        run_diag_slowframe(verbose=a.verbose, config_path=config_path)
+    elif a.target == "tx":
+        run_diag_tx(
+            mode=a.mode,
+            image_path=a.image,
+            image_dir=a.image_dir,
+            no_tx=a.no_tx,
+            module=a.module,
+            verbose=a.verbose,
+            config_path=config_path,
+        )
+
+
 def main():
+    global SLOWFRAME_BIN
+    global TRANSMIT_SCHEDULE, TRANSMIT_SCHEDULE_PROFILE
+    global PIC_TOTAL, PIC_INTERVAL
+    global STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global COOLDOWN_SCALE_FACTOR, MAX_TRANSMIT_DUTY_CYCLE, MIN_CAPTURES_BETWEEN_TRANSMISSIONS
+    global SLOWFRAME_AUDIO_FORMAT, SLOWFRAME_SAMPLE_RATE, SLOWFRAME_ASPECT_MODE
+    global TIMESTAMPED_DIR, TEST_IMAGE, SSTV_WAV
+
+    # Apply env vars first so they act as fallback defaults that config file
+    # and CLI flags can still override.
+    apply_env_overrides()
+
+    # ---------------------------------------------------------------------------
+    # Verb dispatch — handled before argparse so positional arguments (e.g. a
+    # numeric duration like "1.5") are not misinterpreted as unknown flags.
+    # ---------------------------------------------------------------------------
+    _VERBS = {
+        "diag":      None,          # handled separately below (needs cfg preload)
+        "help":      _dispatch_help,
+        "config":    _dispatch_config,
+        "schedules": _dispatch_schedules,
+        "run":       _dispatch_run,
+        "mission":   _dispatch_mission,
+        "status":    _dispatch_status,
+        "service":   _dispatch_service,
+    }
+
+    if len(sys.argv) >= 2 and sys.argv[1] in _VERBS:
+        verb = sys.argv[1]
+        rest = sys.argv[2:]
+
+        if verb == "diag":
+            # Pre-load a --config so status_led / gps settings take effect.
+            # Use the lightweight diag loader to avoid mission-validation errors.
+            cfg_path = None
+            for i, arg in enumerate(sys.argv):
+                if arg == "--config" and i + 1 < len(sys.argv):
+                    cfg_path = sys.argv[i + 1]
+                    _load_diag_config(cfg_path)
+                    break
+            _dispatch_diag(rest, config_path=cfg_path)
+        else:
+            _VERBS[verb](rest)
+        return
+
     # Show usage hint when called with no arguments at all.
     if len(sys.argv) == 1:
-        print(
-            "pi_sstv.py  —  HamWing SSTV HAB payload controller\n"
-            "\n"
-            "No arguments provided.  Common starting points:\n"
-            "\n"
-            "  Generate a config file (recommended first step):\n"
-            f"    python3 pi_sstv.py --generate-config\n"
-            "\n"
-            "  Run a bench encode test (no radio required):\n"
-            "    python3 pi_sstv.py --test r36 --no-tx\n"
-            "\n"
-            "  Start a live HAB mission with a config file:\n"
-            "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
-            "\n"
-            "  Show full help and all options:\n"
-            "    python3 pi_sstv.py --help\n"
-            "\n"
-            "  Show detailed documentation for a pipeline topic:\n"
-            "    python3 pi_sstv.py --explain capture\n"
-            "    python3 pi_sstv.py --explain mmsstv\n"
-            "    python3 pi_sstv.py --explain schedule\n"
-        )
+        import platform, shutil
+
+        py_ver = platform.python_version()
+
+        sf_found = os.path.isfile(SLOWFRAME_BIN) and os.access(SLOWFRAME_BIN, os.X_OK)
+        sf_label = "found" if sf_found else "NOT FOUND"
+
+        if sf_found:
+            try:
+                _sf_probe = run(
+                    [SLOWFRAME_BIN, "-M"], capture_output=True, text=True, timeout=5
+                )
+                _sf_out = _sf_probe.stdout + _sf_probe.stderr
+                if "detected" in _sf_out.lower() and "not detected" not in _sf_out.lower():
+                    mmsstv_label = "detected"
+                else:
+                    mmsstv_label = "not detected  (MMSSTV modes will fall back to native)"
+            except Exception:
+                mmsstv_label = "probe failed"
+        else:
+            mmsstv_label = "unavailable  (SlowFrame not found)"
+
+        cfg_path = find_default_config()
+        if cfg_path:
+            cfg_label = f"found  ({cfg_path})"
+        else:
+            cfg_label = "not found  (run 'config generate' to create one)"
+
+        W = 72
+        bar  = "=" * W
+        thin = "-" * W
+        print(bar)
+        print(f"  pi_sstv.py {SCRIPT_VERSION}  —  HamWing SSTV HAB payload controller")
+        print(thin)
+        print(f"  Python     : {py_ver}")
+        print(f"  SlowFrame  : {sf_label}  ({SLOWFRAME_BIN})")
+        print(f"  MMSSTV     : {mmsstv_label}")
+        print(f"  Config     : {cfg_label}")
+        print(bar)
+        print()
+        print("  No arguments provided.  Common starting points:")
+        print()
+        print("  Run a HAB mission:       python3 pi_sstv.py mission --config pi_sstv.cfg")
+        print("  Single encode+TX test:   python3 pi_sstv.py run --mode r36 --no-tx")
+        print("  Generate a config file:  python3 pi_sstv.py config generate")
+        print("  Validate a config file:  python3 pi_sstv.py config validate pi_sstv.cfg")
+        print("  System readiness check:  python3 pi_sstv.py status")
+        print("  Install systemd service: python3 pi_sstv.py service install")
+        print("  List transmit schedules: python3 pi_sstv.py schedules")
+        print("  Hardware diagnostics:    python3 pi_sstv.py diag ptt 1.0")
+        print("                           python3 pi_sstv.py diag led 1.5")
+        print("  Help topics:             python3 pi_sstv.py help")
+        print("                           python3 pi_sstv.py help mission")
+        print()
+        print("  Legacy flag-based usage:")
+        print("    python3 pi_sstv.py --test r36 --no-tx")
+        print("    python3 pi_sstv.py --config pi_sstv.cfg")
+        print("    python3 pi_sstv.py --help")
+        print()
         sys.exit(0)
 
     args = parse_args()
@@ -2499,12 +6283,6 @@ def main():
         load_config(args.config)
 
     # Apply CLI overrides to module-level configuration
-    global TRANSMIT_SCHEDULE, TRANSMIT_SCHEDULE_PROFILE
-    global PIC_TOTAL, PIC_INTERVAL
-    global STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
-    global COOLDOWN_SCALE_FACTOR, MAX_TRANSMIT_DUTY_CYCLE, MIN_CAPTURES_BETWEEN_TRANSMISSIONS
-    global SLOWFRAME_AUDIO_FORMAT, SLOWFRAME_SAMPLE_RATE, SLOWFRAME_ASPECT_MODE
-    global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, SSTV_WAV
 
     TRANSMIT_SCHEDULE_PROFILE = args.schedule
     TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(args.schedule, TRANSMIT_SCHEDULE_PROFILES["hab_cruise"])
