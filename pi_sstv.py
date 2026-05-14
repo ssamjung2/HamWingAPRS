@@ -7,8 +7,13 @@ import sys
 import math
 from dataclasses import dataclass, field
 import time
+<<<<<<< HEAD
 from subprocess import CalledProcessError, run
 from datetime import datetime, timezone, timedelta
+=======
+from subprocess import run
+from datetime import datetime, timezone
+>>>>>>> cbbea99 (HAB SSTV)
 import csv
 import os
 import re
@@ -60,7 +65,10 @@ logger = logging.getLogger("pi_sstv")
 # Paths and constants
 BASE_DIR = "/home/pi-user"
 DEFAULT_CONFIG_PATH = os.path.join(BASE_DIR, "pi_sstv.cfg")
+<<<<<<< HEAD
 GENERATE_CONFIG_USE_CONFIG_PATH = "__use_config_path__"
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 TIMESTAMPED_DIR = os.path.join(BASE_DIR, "Desktop/HAB")
 PI_SSTV_BIN = os.path.join(BASE_DIR, "pi-sstv", "pi-sstv")
 
@@ -70,11 +78,14 @@ TEST_IMAGE = os.path.join(BASE_DIR, "pi-sstv", "test.jpg")
 SSTV_WAV = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
 DATA_CSV = os.path.join(BASE_DIR, "data.csv")
 RPICAM_BIN = "/usr/bin/rpicam-still"
+<<<<<<< HEAD
 CAMERA_NAME = "Raspberry Pi Camera Module"
 CAMERA_MODEL = "OV5647"
 CAMERA_SENSOR_CLASS = "5 MP fixed-focus CSI sensor"
 CAMERA_NATIVE_RESOLUTION = "2592x1944"
 CAMERA_CAPTURE_RESOLUTION = "auto (rpicam-still default; no explicit width/height override)"
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 RPICAM_QUALITY = 93
 RPICAM_METERING = "matrix"   # multi-zone; handles split sky/ground HAB scenes better than average
 RPICAM_EXPOSURE = "sport"    # prefer faster shutter to reduce motion blur from balloon movement
@@ -98,17 +109,28 @@ SLOWFRAME_TIMESTAMP_OVERLAY_SIZE = 11
 SLOWFRAME_TIMESTAMP_OVERLAY_POSITION = "top-left"
 SLOWFRAME_TIMESTAMP_OVERLAY_COLOR = "white"
 SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR = "black"
+<<<<<<< HEAD
 SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY = 50
+=======
+SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY = 70
+>>>>>>> cbbea99 (HAB SSTV)
 
 # Optional station ID overlay / CW ID
 STATION_CALLSIGN = ""
 OVERLAY_TEXT_OVERRIDE = ""
 SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = False
+<<<<<<< HEAD
 SLOWFRAME_CALLSIGN_OVERLAY_SIZE = 14
 SLOWFRAME_CALLSIGN_OVERLAY_POSITION = "top-right"
 SLOWFRAME_CALLSIGN_OVERLAY_COLOR = "white"
 SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = "black"
 SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY = 50
+=======
+SLOWFRAME_CALLSIGN_OVERLAY_SIZE = 13
+SLOWFRAME_CALLSIGN_OVERLAY_POSITION = "top-right"
+SLOWFRAME_CALLSIGN_OVERLAY_COLOR = "white"
+SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = "black"
+>>>>>>> cbbea99 (HAB SSTV)
 
 # Uncomment and adjust if you want a different default mode or output behavior.
 # Common modes:
@@ -480,7 +502,10 @@ class ModeProfile:
     duration_seconds: int
     cooldown_seconds: int
     image_width: int = 320
+<<<<<<< HEAD
     image_height: Optional[int] = None
+=======
+>>>>>>> cbbea99 (HAB SSTV)
     requires_mmsstv: bool = False
     fallback_mode: Optional[str] = None
     description: str = ""
@@ -502,9 +527,14 @@ MODE_PROFILES = {
     "robot8bw": ModeProfile(
         name="robot8bw",
         duration_seconds=8,
+<<<<<<< HEAD
         cooldown_seconds=8,
         image_width=160,
         image_height=120,
+=======
+        cooldown_seconds=90,
+        image_width=160,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="bw24",
         description="Ultra-fast MMSSTV monochrome status frame for tight duty-cycle budgets.",
@@ -512,9 +542,14 @@ MODE_PROFILES = {
     "robot12bw": ModeProfile(
         name="robot12bw",
         duration_seconds=12,
+<<<<<<< HEAD
         cooldown_seconds=12,
         image_width=160,
         image_height=120,
+=======
+        cooldown_seconds=90,
+        image_width=160,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="bw24",
         description="Very fast MMSSTV monochrome mode for rapid update windows.",
@@ -526,6 +561,12 @@ MODE_PROFILES = {
         image_width=320,
         image_height=120,
         description="Fast monochrome native mode for low duty-cycle updates.",
+    ),
+    "m4": ModeProfile(
+        name="m4",
+        duration_seconds=29,
+        cooldown_seconds=135,
+        description="Fast native Martin color mode; half the airtime of M2; ideal for rapid-update ascent phases.",
     ),
     "r36": ModeProfile(
         name="r36",
@@ -606,9 +647,14 @@ MODE_PROFILES = {
     "pd120": ModeProfile(
         name="pd120",
         duration_seconds=120,
+<<<<<<< HEAD
         cooldown_seconds=120,
         image_width=640,
         image_height=496,
+=======
+        cooldown_seconds=540,
+        image_width=640,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Higher-quality MMSSTV mode with a larger cooldown budget.",
@@ -616,9 +662,14 @@ MODE_PROFILES = {
     "pd160": ModeProfile(
         name="pd160",
         duration_seconds=160,
+<<<<<<< HEAD
         cooldown_seconds=160,
         image_width=512,
         image_height=400,
+=======
+        cooldown_seconds=660,
+        image_width=512,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Slower MMSSTV quality mode for longer detail passes.",
@@ -626,9 +677,14 @@ MODE_PROFILES = {
     "pd180": ModeProfile(
         name="pd180",
         duration_seconds=180,
+<<<<<<< HEAD
         cooldown_seconds=180,
         image_width=640,
         image_height=496,
+=======
+        cooldown_seconds=720,
+        image_width=640,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="m1",
         description="High-detail MMSSTV mode, best for occasional mission snapshots.",
@@ -636,9 +692,14 @@ MODE_PROFILES = {
     "fax480": ModeProfile(
         name="fax480",
         duration_seconds=180,
+<<<<<<< HEAD
         cooldown_seconds=180,
         image_width=512,
         image_height=480,
+=======
+        cooldown_seconds=720,
+        image_width=512,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="m1",
         description="High-detail MMSSTV mode best reserved for test windows.",
@@ -646,9 +707,14 @@ MODE_PROFILES = {
     "pd240": ModeProfile(
         name="pd240",
         duration_seconds=240,
+<<<<<<< HEAD
         cooldown_seconds=240,
         image_width=640,
         image_height=496,
+=======
+        cooldown_seconds=900,
+        image_width=640,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="m1",
         description="Very high quality MMSSTV PD mode for science windows and horizon detail passes.",
@@ -656,15 +722,21 @@ MODE_PROFILES = {
     "pd290": ModeProfile(
         name="pd290",
         duration_seconds=290,
+<<<<<<< HEAD
         cooldown_seconds=290,
         image_width=800,
         image_height=616,
+=======
+        cooldown_seconds=1080,
+        image_width=800,
+>>>>>>> cbbea99 (HAB SSTV)
         requires_mmsstv=True,
         fallback_mode="pd180",
         description="Highest quality MMSSTV mode; reserve for occasional best-shot captures at peak altitude.",
     ),
 }
 
+<<<<<<< HEAD
 # Accept common SlowFrame/MMSSTV naming variants and punctuation styles.
 # Keys are normalized with non-alphanumeric characters removed.
 MODE_ALIASES = {
@@ -1090,10 +1162,30 @@ BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
     ),
     # standard: Balanced quality and frequency (default).
     "standard": (
+=======
+TRANSMIT_SCHEDULE_PROFILE = "hab_cruise"
+TRANSMIT_SCHEDULE_PROFILES = {
+    # hab_climb: absolute maximum update rate, mono-heavy — steepest part of the climb.
+    "hab_climb": (
+        "robot8bw",
+        "robot12bw",
+        "bw24",
+        "m4",
+        "robot12bw",
         "r36",
+    ),
+    # hab_rapid: fast color rotation with short cooldowns — upper ascent / release phase.
+    "hab_rapid": (
+        "robot12bw",
+        "m4",
+>>>>>>> cbbea99 (HAB SSTV)
+        "r36",
+        "robot12bw",
+        "m4",
         "pd50",
         "pd90",
     ),
+<<<<<<< HEAD
     # quality: Medium-quality color with longer cooldown budgets.
     "quality": (
         "pd50",
@@ -1111,6 +1203,11 @@ BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
     ),
     # native-balanced: General native-only mission profile; no MMSSTV dependency.
     "native-balanced": (
+=======
+    # hab_cruise: balanced default — mixes status frames and quality shots across the full flight.
+    "hab_cruise": (
+        "robot12bw",
+>>>>>>> cbbea99 (HAB SSTV)
         "r36",
         "m2",
         "s2",
@@ -1119,6 +1216,7 @@ BUILTIN_TRANSMIT_SCHEDULE_PROFILES = {
     "native-detail": (
         "r72",
         "m1",
+<<<<<<< HEAD
         "s1",
     ),
 }
@@ -1250,6 +1348,41 @@ def generate_default_config(path: str):
         builtin_schedule_lines.append(f"#                    {' -> '.join(modes)}")
     builtin_schedule_block = "\n".join(builtin_schedule_lines)
     GPS_ENABLED_STR = "true" if GPS_ENABLED else "false"
+=======
+    ),
+    # hab_float: quality-first — anchored by PD modes for float altitude and science windows.
+    "hab_float": (
+        "r36",
+        "pd90",
+        "robot12bw",
+        "pd120",
+        "robot12bw",
+        "pd180",
+        "r36",
+        "pd240",
+    ),
+}
+TRANSMIT_SCHEDULE_DESCRIPTIONS = {
+    "hab_climb":  "Maximum update-rate profile. Monochrome frames dominate to minimise cooldown "
+                  "gaps during the steepest part of the climb.",
+    "hab_rapid":  "Short bursts + one PD color shot per rotation. Best during rapid ascent "
+                  "when update rate matters more than image quality.",
+    "hab_cruise": "Status frames mixed with progressive quality shots. Default mission profile "
+                  "for the full flight envelope.",
+    "hab_float":  "Quality-first rotation anchored by PD modes. Suited for float altitude or "
+                  "slow-drift windows where airtime budget is relaxed.",
+}
+
+TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(
+    TRANSMIT_SCHEDULE_PROFILE,
+    TRANSMIT_SCHEDULE_PROFILES["hab_cruise"],
+)
+
+
+def generate_default_config(path: str):
+    """Write a fully-commented default configuration file to *path*."""
+    schedules = ", ".join(TRANSMIT_SCHEDULE_PROFILES.keys())
+>>>>>>> cbbea99 (HAB SSTV)
     content = f"""\
 # =============================================================================
 # pi_sstv.cfg  —  HamWing SSTV HAB payload controller configuration
@@ -1266,7 +1399,11 @@ def generate_default_config(path: str):
 #
 # For detailed documentation on any section, run:
 #   python3 pi_sstv.py --explain <topic>
+<<<<<<< HEAD
 #   Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging  env
+=======
+#   Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging
+>>>>>>> cbbea99 (HAB SSTV)
 # =============================================================================
 
 
@@ -1289,6 +1426,7 @@ def generate_default_config(path: str):
 # Path to the rolling CSV capture index log.
 # data_csv = {DATA_CSV}
 
+<<<<<<< HEAD
 # Storage management: delete intermediate files after each stage completes.
 # Useful for SD-card-constrained HAB payloads where disk space is limited.
 # Both default to false (keep all files).
@@ -1333,6 +1471,8 @@ include_timestamp_overlay = {'true' if TEST_PANEL_INCLUDE_TIMESTAMP_OVERLAY else
 # Use with caution and only in lawful/authorized test contexts.
 allow_tx_without_callsign = {'true' if TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN else 'false'}
 
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 
 # -----------------------------------------------------------------------------
 # [mission]  Main capture-and-transmit loop
@@ -1340,6 +1480,7 @@ allow_tx_without_callsign = {'true' if TEST_PANEL_ALLOW_TX_WITHOUT_CALLSIGN else
 # For --explain reference: python3 pi_sstv.py --explain schedule
 [mission]
 
+<<<<<<< HEAD
 # Enable or disable the mission.  Set to false to prevent the service from
 # launching the capture-and-transmit loop.  The service will exit cleanly
 # (exit code 0) without restarting, so watchdog does not interfere.
@@ -1363,6 +1504,16 @@ schedule = {TRANSMIT_SCHEDULE_PROFILE}
 #   4. A final safety fallback to r36, then the first available mode.
 unavailable_mode_fallback = {GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK}
 
+=======
+# Transmit schedule preset.  Controls which SSTV modes are used in rotation.
+# Available presets: {schedules}
+#   hab_climb  - Mono-heavy maximum update rate; for the steepest climb phase.
+#   hab_rapid  - Fast color bursts; best for upper ascent and release.
+#   hab_cruise - Balanced default; works across the full flight envelope.
+#   hab_float  - Quality-first PD modes; suited for float altitude / science windows.
+schedule = {TRANSMIT_SCHEDULE_PROFILE}
+
+>>>>>>> cbbea99 (HAB SSTV)
 # Total number of image captures before the mission ends.
 total = {PIC_TOTAL}
 
@@ -1370,7 +1521,11 @@ total = {PIC_TOTAL}
 interval = {PIC_INTERVAL}
 
 # Station callsign printed in the image overlay (e.g. W1AW-11).
+<<<<<<< HEAD
 # Callsign is required for encode/test/mission workflows.
+=======
+# Leave blank to disable the callsign overlay.
+>>>>>>> cbbea99 (HAB SSTV)
 callsign = {STATION_CALLSIGN}
 
 # Minimum number of capture cycles that must elapse between any two
@@ -1383,6 +1538,7 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 
 
 # -----------------------------------------------------------------------------
+<<<<<<< HEAD
 # [schedule_profile custom]  Optional operator-defined schedule profile
 # -----------------------------------------------------------------------------
 # Any section named [schedule_profile <name>] becomes a selectable schedule.
@@ -1408,10 +1564,14 @@ min_captures_between_transmissions = {MIN_CAPTURES_BETWEEN_TRANSMISSIONS}
 
 # -----------------------------------------------------------------------------
 # [radio]  Radio band selection, duty-cycle, cooldown, and TX timing
+=======
+# [radio]  Duty-cycle, cooldown, and TX timing
+>>>>>>> cbbea99 (HAB SSTV)
 # -----------------------------------------------------------------------------
 # For --explain reference: python3 pi_sstv.py --explain tx
 [radio]
 
+<<<<<<< HEAD
 # Active radio band for transmission.
 #   vhf   - DRA818V only via GPIO27 (physical pin 13)   (default)
 #   uhf   - DRA818U only via GPIO17 (physical pin 11)   add wire: Pi GPIO17 -> HamWing UHF PTT
@@ -1463,6 +1623,19 @@ estimated_tx_heat_power_high_w = {ESTIMATED_TX_HEAT_POWER_HIGH_W}
 # Additional conservative multiplier for estimated cooling time.
 estimated_cooldown_safety_factor = {ESTIMATED_COOLDOWN_SAFETY_FACTOR}
 
+=======
+# Rolling window duration in seconds used for duty-cycle accounting.
+rolling_duty_cycle_window_seconds = {ROLLING_DUTY_CYCLE_WINDOW_SECONDS}
+
+# Maximum transmit fraction of the rolling window (0.0 – 1.0).
+# 0.25 = 25 % = 900 s per hour.
+max_transmit_duty_cycle = {MAX_TRANSMIT_DUTY_CYCLE}
+
+# Multiply all per-mode cooldown durations by this factor.
+# 1.0 = nominal defaults  |  0.75 = more aggressive  |  1.5 = conservative
+cooldown_scale_factor = {COOLDOWN_SCALE_FACTOR}
+
+>>>>>>> cbbea99 (HAB SSTV)
 # Seconds to wait after asserting PD=HIGH before keying PTT, allowing the
 # DRA818 module time to power up and stabilise.
 radio_wake_delay_seconds = {RADIO_WAKE_DELAY_SECONDS}
@@ -1475,6 +1648,7 @@ post_playback_delay_seconds = {POST_PLAYBACK_DELAY_SECONDS}
 
 
 # -----------------------------------------------------------------------------
+<<<<<<< HEAD
 # [status_led]  Mission/activity status indicator LED
 # -----------------------------------------------------------------------------
 [status_led]
@@ -1507,6 +1681,8 @@ error_cycle_seconds = {STATUS_LED_ERROR_CYCLE_SECONDS}
 
 
 # -----------------------------------------------------------------------------
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 # [capture]  Camera and image acquisition  (OV5647 / rpicam-still)
 # -----------------------------------------------------------------------------
 # For --explain reference: python3 pi_sstv.py --explain capture
@@ -1595,11 +1771,14 @@ callsign_size = {SLOWFRAME_CALLSIGN_OVERLAY_SIZE}
 callsign_position = {SLOWFRAME_CALLSIGN_OVERLAY_POSITION}
 callsign_color = {SLOWFRAME_CALLSIGN_OVERLAY_COLOR}
 callsign_background_color = {SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR}
+<<<<<<< HEAD
 callsign_background_opacity = {SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY}
 
 # Optional replacement for default MODE DATE TIME body text.
 # Callsign remains mandatory and is always prepended automatically.
 custom_text = {OVERLAY_TEXT_OVERRIDE}
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 
 
 # -----------------------------------------------------------------------------
@@ -1621,6 +1800,7 @@ disable = false
 
 
 # -----------------------------------------------------------------------------
+<<<<<<< HEAD
 # [alsa]  Playback device, mixer guardrails, and timeout behavior
 # -----------------------------------------------------------------------------
 # Use this section to pin a playback target or tune mixer guardrails.
@@ -1719,6 +1899,8 @@ units = {GPS_ALTITUDE_UNITS}
 
 
 # -----------------------------------------------------------------------------
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 # [logging]  Log verbosity and output destination
 # -----------------------------------------------------------------------------
 # For --explain reference: python3 pi_sstv.py --explain logging
@@ -1750,6 +1932,7 @@ def load_config(path: str):
     silently ignored to allow forward-compatible config files.
     """
     global TRANSMIT_SCHEDULE_PROFILE, TRANSMIT_SCHEDULE
+<<<<<<< HEAD
     global TRANSMIT_SCHEDULE_PROFILES, TRANSMIT_SCHEDULE_DESCRIPTIONS, TRANSMIT_SCHEDULE_FALLBACK_MODES
     global GLOBAL_SCHEDULE_UNAVAILABLE_MODE_FALLBACK
     global PIC_TOTAL, PIC_INTERVAL, MISSION_ENABLED, STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
@@ -1765,6 +1948,11 @@ def load_config(path: str):
     global ESTIMATED_MIN_AIR_DENSITY_FACTOR, ESTIMATED_EFFECTIVE_THERMAL_AREA_M2
     global ESTIMATED_TX_HEAT_POWER_LOW_W, ESTIMATED_TX_HEAT_POWER_HIGH_W
     global ESTIMATED_COOLDOWN_SAFETY_FACTOR
+=======
+    global PIC_TOTAL, PIC_INTERVAL, STATION_CALLSIGN, SLOWFRAME_ENABLE_CALLSIGN_OVERLAY
+    global MIN_CAPTURES_BETWEEN_TRANSMISSIONS
+    global ROLLING_DUTY_CYCLE_WINDOW_SECONDS, MAX_TRANSMIT_DUTY_CYCLE, COOLDOWN_SCALE_FACTOR
+>>>>>>> cbbea99 (HAB SSTV)
     global RADIO_WAKE_DELAY_SECONDS, PTT_KEY_DELAY_SECONDS, POST_PLAYBACK_DELAY_SECONDS
     global RPICAM_QUALITY, RPICAM_METERING, RPICAM_EXPOSURE, RPICAM_AWB, CAPTURE_FILE_TIMEOUT
     global SLOWFRAME_AUDIO_FORMAT, SLOWFRAME_SAMPLE_RATE, SLOWFRAME_ASPECT_MODE
@@ -1775,6 +1963,7 @@ def load_config(path: str):
     global SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY
     global SLOWFRAME_CALLSIGN_OVERLAY_SIZE, SLOWFRAME_CALLSIGN_OVERLAY_POSITION
     global SLOWFRAME_CALLSIGN_OVERLAY_COLOR, SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR
+<<<<<<< HEAD
     global SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY
     global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, DATA_CSV, SSTV_WAV
     global ACTIVE_RADIO_BAND, TX_POWER_LEVEL, PD_IDLE_MODE
@@ -1791,6 +1980,9 @@ def load_config(path: str):
     global ALSA_TARGET_VOLUME_PERCENT, ALSA_MAX_SAFE_VOLUME_PERCENT, ALSA_ENFORCE_VOLUME
     global APLAY_TIMEOUT_SECONDS, APLAY_TIMEOUT_MARGIN_SECONDS
     global DELETE_CAPTURE_AFTER_ENCODE, DELETE_WAV_AFTER_TX
+=======
+    global TIMESTAMPED_DIR, SLOWFRAME_BIN, TEST_IMAGE, DATA_CSV, SSTV_WAV
+>>>>>>> cbbea99 (HAB SSTV)
 
     if not os.path.isfile(path):
         print(f"Config file not found: {path}", file=sys.stderr)
@@ -1798,6 +1990,7 @@ def load_config(path: str):
 
     cfg = configparser.ConfigParser(interpolation=None)
     cfg.read(path)
+<<<<<<< HEAD
     _reset_schedule_profile_registry()
 
     def _warn_deprecated_keys() -> None:
@@ -1812,10 +2005,13 @@ def load_config(path: str):
                     )
 
     _warn_deprecated_keys()
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 
     def _str(section, key, default):
         return cfg.get(section, key, fallback=default)
 
+<<<<<<< HEAD
     def _scalar_value_for_parse(section: str, key: str):
         """Return a normalized single-line scalar config value, or None if unset.
 
@@ -1851,21 +2047,32 @@ def load_config(path: str):
             return default
         try:
             return int(value, 10)
+=======
+    def _int(section, key, default):
+        try:
+            return cfg.getint(section, key, fallback=default)
+>>>>>>> cbbea99 (HAB SSTV)
         except ValueError as exc:
             print(f"Config [{section}] {key}: invalid integer — {exc}", file=sys.stderr)
             sys.exit(1)
 
     def _float(section, key, default):
+<<<<<<< HEAD
         value = _scalar_value_for_parse(section, key)
         if value is None:
             return default
         try:
             return float(value)
+=======
+        try:
+            return cfg.getfloat(section, key, fallback=default)
+>>>>>>> cbbea99 (HAB SSTV)
         except ValueError as exc:
             print(f"Config [{section}] {key}: invalid float — {exc}", file=sys.stderr)
             sys.exit(1)
 
     def _bool(section, key, default):
+<<<<<<< HEAD
         value = _scalar_value_for_parse(section, key)
         if value is None:
             return default
@@ -1881,6 +2088,13 @@ def load_config(path: str):
             file=sys.stderr,
         )
         sys.exit(1)
+=======
+        try:
+            return cfg.getboolean(section, key, fallback=default)
+        except ValueError as exc:
+            print(f"Config [{section}] {key}: invalid boolean (use true/false) — {exc}", file=sys.stderr)
+            sys.exit(1)
+>>>>>>> cbbea99 (HAB SSTV)
 
     # [paths]
     TIMESTAMPED_DIR   = _str("paths", "output_dir",  TIMESTAMPED_DIR)
@@ -1888,6 +2102,7 @@ def load_config(path: str):
     TEST_IMAGE        = _str("paths", "test_image",   TEST_IMAGE)
     DATA_CSV          = _str("paths", "data_csv",     DATA_CSV)
     SSTV_WAV          = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
+<<<<<<< HEAD
     DELETE_CAPTURE_AFTER_ENCODE = _bool("paths", "delete_capture_after_encode", DELETE_CAPTURE_AFTER_ENCODE)
     DELETE_WAV_AFTER_TX         = _bool("paths", "delete_wav_after_tx",         DELETE_WAV_AFTER_TX)
 
@@ -1971,6 +2186,11 @@ def load_config(path: str):
         sys.exit(1)
 
     schedule = _normalize_schedule_profile_name(_str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE))
+=======
+
+    # [mission]
+    schedule = _str("mission", "schedule", TRANSMIT_SCHEDULE_PROFILE)
+>>>>>>> cbbea99 (HAB SSTV)
     if schedule not in TRANSMIT_SCHEDULE_PROFILES:
         print(f"Config [mission] schedule: unknown preset '{schedule}'. "
               f"Valid: {', '.join(TRANSMIT_SCHEDULE_PROFILES)}", file=sys.stderr)
@@ -1986,6 +2206,7 @@ def load_config(path: str):
         SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
 
     # [radio]
+<<<<<<< HEAD
     band = _str("radio", "band", ACTIVE_RADIO_BAND).strip().lower()
     if band not in ("vhf", "uhf", "both"):
         print(f"Config [radio] band: invalid value '{band}'. Valid: vhf, uhf, both", file=sys.stderr)
@@ -2042,6 +2263,11 @@ def load_config(path: str):
     ESTIMATED_TX_HEAT_POWER_LOW_W     = max(0.05, _float("radio", "estimated_tx_heat_power_low_w", ESTIMATED_TX_HEAT_POWER_LOW_W))
     ESTIMATED_TX_HEAT_POWER_HIGH_W    = max(0.05, _float("radio", "estimated_tx_heat_power_high_w", ESTIMATED_TX_HEAT_POWER_HIGH_W))
     ESTIMATED_COOLDOWN_SAFETY_FACTOR  = max(0.1, _float("radio", "estimated_cooldown_safety_factor", ESTIMATED_COOLDOWN_SAFETY_FACTOR))
+=======
+    ROLLING_DUTY_CYCLE_WINDOW_SECONDS = _int  ("radio", "rolling_duty_cycle_window_seconds", ROLLING_DUTY_CYCLE_WINDOW_SECONDS)
+    MAX_TRANSMIT_DUTY_CYCLE           = _float("radio", "max_transmit_duty_cycle",           MAX_TRANSMIT_DUTY_CYCLE)
+    COOLDOWN_SCALE_FACTOR             = _float("radio", "cooldown_scale_factor",             COOLDOWN_SCALE_FACTOR)
+>>>>>>> cbbea99 (HAB SSTV)
     RADIO_WAKE_DELAY_SECONDS          = _float("radio", "radio_wake_delay_seconds",          RADIO_WAKE_DELAY_SECONDS)
     PTT_KEY_DELAY_SECONDS             = _float("radio", "ptt_key_delay_seconds",             PTT_KEY_DELAY_SECONDS)
     POST_PLAYBACK_DELAY_SECONDS       = _float("radio", "post_playback_delay_seconds",       POST_PLAYBACK_DELAY_SECONDS)
@@ -2080,8 +2306,11 @@ def load_config(path: str):
     SLOWFRAME_CALLSIGN_OVERLAY_POSITION         = _str  ("overlay", "callsign_position",          SLOWFRAME_CALLSIGN_OVERLAY_POSITION)
     SLOWFRAME_CALLSIGN_OVERLAY_COLOR            = _str  ("overlay", "callsign_color",             SLOWFRAME_CALLSIGN_OVERLAY_COLOR)
     SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = _str  ("overlay", "callsign_background_color",  SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR)
+<<<<<<< HEAD
     SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY = _int("overlay", "callsign_background_opacity", SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY)
     OVERLAY_TEXT_OVERRIDE = _str("overlay", "custom_text", OVERLAY_TEXT_OVERRIDE).strip()
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 
     # [mmsstv]
     lib_path = _str("mmsstv", "lib_path", "").strip()
@@ -2090,6 +2319,7 @@ def load_config(path: str):
     if _bool("mmsstv", "disable", False):
         os.environ[MMSSTV_DISABLE_ENV_VAR] = "1"
 
+<<<<<<< HEAD
     # [alsa]
     ALSA_AUDIO_DEVICE             = _str ("alsa", "playback_device",         ALSA_AUDIO_DEVICE).strip()
     ALSA_MIXER_DEVICE             = _str ("alsa", "mixer_device",            ALSA_MIXER_DEVICE).strip()
@@ -2136,6 +2366,8 @@ def load_config(path: str):
     GPS_SYNC_SYSTEM_TIME = _bool("gps", "sync_system_time", GPS_SYNC_SYSTEM_TIME)
     _GPS_STARTUP_INIT_ATTEMPTED = False
 
+=======
+>>>>>>> cbbea99 (HAB SSTV)
     # [logging] — debug/log_file/quiet_log_file are handled by CLI args only;
     # reading them here would require reconfiguring the logging system after
     # it has already been set up.  Document them in the file but skip loading.
@@ -3358,6 +3590,7 @@ def log_section(title: str, width: int = 56):
     log(bar)
 
 
+<<<<<<< HEAD
 LOG_FRAME_WIDTH = 72
 
 
@@ -3489,6 +3722,8 @@ def describe_overlay(mode_name: str, timestamp_message: Optional[str], gps_text:
     return "none"
 
 
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 # ---------------------------------------------------------------------------
 # Contextual help topics  (--explain TOPIC)
 # ---------------------------------------------------------------------------
@@ -3594,7 +3829,11 @@ SSTV mode selection
   The mode determines the transmitted image resolution, duration, and whether
   the MMSSTV encoder library is required.  See --explain modes for the full
   table.  Key parameters:
+<<<<<<< HEAD
         image_width/height - Nominal raster geometry for the selected SSTV mode.
+=======
+        image_width      - Pixel width SlowFrame will scale the input to.
+>>>>>>> cbbea99 (HAB SSTV)
         duration_seconds - Approximate over-the-air TX time.
         cooldown_seconds - Minimum wait enforced after this mode transmits.
 
@@ -3629,7 +3868,11 @@ EXTERNAL COMMANDS
 SEE ALSO
   --explain capture  Camera and image acquisition settings
   --explain overlay  Text overlays baked into the image before encoding
+<<<<<<< HEAD
   --explain mmsstv   MMSSTV library modes (robot8bw, robot12bw, pd50, pd90, pd120, pd160, pd180, pd240, pd290, fax480)
+=======
+  --explain mmsstv   MMSSTV library modes (pd50, pd90, pd120, pd160, pd180, fax480)
+>>>>>>> cbbea99 (HAB SSTV)
   --explain modes    Full SSTV mode reference table
 """,
 
@@ -3642,8 +3885,12 @@ image on-air and in the saved WAV artifact.
 
 Timestamp overlay (SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY)
   Prints the UTC capture time in the top-left corner of every image.
+<<<<<<< HEAD
     Enabled by default.  Format: YYYY-MM-DD HH:MM:SSZ (UTC), with "TEST"
     appended in test mode.
+=======
+  Enabled by default.  Format: YYYY.MM.DD - HH:MM:SS [TEST] in test mode.
+>>>>>>> cbbea99 (HAB SSTV)
 
   Configuration constants (edit at top of script):
     SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY        = True/False
@@ -3651,7 +3898,11 @@ Timestamp overlay (SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY)
     SLOWFRAME_TIMESTAMP_OVERLAY_POSITION      = top-left (default)
     SLOWFRAME_TIMESTAMP_OVERLAY_COLOR         = white (default)
     SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR    = black (default)
+<<<<<<< HEAD
     SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY  = 0-100 (default: 50)
+=======
+    SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY  = 0-100 (default: 70)
+>>>>>>> cbbea99 (HAB SSTV)
 
   Valid positions:
     top-left, top-right, bottom-left, bottom-right, top, bottom, left, right, center
@@ -3659,6 +3910,7 @@ Timestamp overlay (SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY)
   Colors: named CSS colors (white, black, yellow, red, ...) or hex (#RRGGBB)
 
 Callsign overlay (SLOWFRAME_ENABLE_CALLSIGN_OVERLAY)
+<<<<<<< HEAD
     Prints the station callsign prefix as part of the merged default overlay:
         CALLSIGN MODE DATE TIME
     Callsign is required for encode/test/mission workflows.
@@ -3671,10 +3923,23 @@ Callsign overlay (SLOWFRAME_ENABLE_CALLSIGN_OVERLAY)
     SLOWFRAME_CALLSIGN_OVERLAY_COLOR          = white (default)
     SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = black (default)
     SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_OPACITY = 0-100 (default: 50)
+=======
+  Prints the station callsign, typically in the top-right corner.
+  Disabled by default; enabled automatically when --callsign is passed.
+
+  Configuration constants:
+    STATION_CALLSIGN                          = "" (set via --callsign)
+    SLOWFRAME_ENABLE_CALLSIGN_OVERLAY         = False (auto-enabled with --callsign)
+    SLOWFRAME_CALLSIGN_OVERLAY_SIZE           = font size (default: 13)
+    SLOWFRAME_CALLSIGN_OVERLAY_POSITION       = top-right (default)
+    SLOWFRAME_CALLSIGN_OVERLAY_COLOR          = white (default)
+    SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR = black (default)
+>>>>>>> cbbea99 (HAB SSTV)
 
 Merging behaviour
   SlowFrame places all -T overlays at the same rendered position regardless of
   separate pos= values.  When both timestamp and callsign overlays are enabled,
+<<<<<<< HEAD
     the script merges them into a single overlay string that also includes the
     SSTV mode and optional GPS text:
         "W1AW-11  R36  2026-04-12 00:25:05Z  EN34mb 1234m"
@@ -3682,6 +3947,14 @@ Merging behaviour
 
 Font size scaling
   Font sizes are scaled proportionally to the mode's image_width, anchored
+=======
+  the script merges them into a single overlay string:
+    "W1AW-11  2026.04.12 - 00:25:05 UTC"
+  This prevents the two strings from stacking on top of each other.
+
+Font size scaling
+  Font sizes are scaled proportionally to the mode's image_width, anchored at
+>>>>>>> cbbea99 (HAB SSTV)
   320 px.  A size=11 at 320 px becomes size=22 at 640 px, keeping the overlay
   legible at both low- and high-resolution modes.
 
@@ -3694,10 +3967,17 @@ EXAMPLES
 
 EXTERNAL COMMANDS
   slowframe  (overlay flags)
+<<<<<<< HEAD
                                 The -T flag accepts a pipe-delimited overlay descriptor string. You can
                 experiment with overlay rendering directly:
       slowframe -i photo.jpg -o out.wav -p r36 \
                                 -T "W1AW-11  R36  2026-04-12 00:25:05Z|size=11|color=white|bg=black|bgbar=true|bgbar-margin=4|pos=top-left"
+=======
+    The -T flag accepts a pipe-delimited overlay descriptor string.  You can
+    experiment with overlay rendering directly:
+      slowframe -i photo.jpg -o out.wav -p r36 \
+        -T "W1AW-11  2026.04.12|size=11|pos=top-left|color=white|bg=black|opacity=70"
+>>>>>>> cbbea99 (HAB SSTV)
       slowframe --help              Full -T syntax reference
       slowframe -L -v               Verbose mode list (shows resolution hints)
 
@@ -3714,7 +3994,11 @@ These modes are not built into SlowFrame and will only work when the shared
 library is present and detectable.
 
 Modes requiring MMSSTV:
+<<<<<<< HEAD
     robot8bw   robot12bw   pd50   pd90   pd120   pd160   pd180   pd240   pd290   fax480
+=======
+  robot8bw   robot12bw   pd50   pd90   pd120   pd160   pd180   fax480
+>>>>>>> cbbea99 (HAB SSTV)
 
 Detection
   At startup, the script runs 'slowframe -M' which probes for the library.
@@ -3748,8 +4032,12 @@ Fallback chain
     robot8bw  -> bw24     robot12bw -> bw24
     pd50      -> m2       pd90      -> r36
     pd120     -> m1       pd160     -> m1
+<<<<<<< HEAD
     pd180     -> m1       pd240     -> m1
     pd290     -> pd180    fax480    -> m1
+=======
+    pd180     -> m1       fax480    -> m1
+>>>>>>> cbbea99 (HAB SSTV)
 
 EXAMPLES
   Verify the library is detected and pd90 encodes correctly:
@@ -3792,6 +4080,7 @@ TOPIC: modes
 SSTV mode reference.  All durations are approximate over-the-air TX times.
 
 Native modes (no MMSSTV library required):
+<<<<<<< HEAD
     Name         TX (s)   Cooldown (s)   WxH       Description
     bw24             24             24   320x120   Fast monochrome, low duty-cycle updates
     r36              36             36   320x240   Fast native color, regular updates
@@ -3819,6 +4108,32 @@ Mode geometry
     Each mode encodes at a nominal raster width and height. SlowFrame scales the
     captured image to this raster before encoding. The aspect handling (--aspect)
     controls how the camera's 4:3 frame is fitted to the mode canvas.
+=======
+  Name         TX (s)   Cooldown (s)   Width   Description
+  bw24             24            120     320   Fast monochrome, low duty-cycle updates
+  r36              36            150     320   Fast native color, regular updates
+  m2               58            240     320   Balanced, strong compatibility
+  s2               71            300     320   Scottie 2, good compatibility
+  r72              72            300     320   Higher-quality Robot color
+  s1              110            480     320   Scottie 1, best native quality
+  m1              114            480     320   Martin 1, high-quality, less frequent
+
+MMSSTV library modes (require libsstv_encoder.so):
+  Name         TX (s)   Cooldown (s)   Width   Fallback   Description
+  robot8bw          8             90     160   bw24       Ultra-fast monochrome status frame
+  robot12bw        12             90     160   bw24       Very fast monochrome
+  pd50             50            240     320   m2         Fast PD color
+  pd90             90            360     320   r36        Popular fast color
+  pd120           120            540     640   m1         Higher-quality, larger image
+  pd160           160            660     512   m1         Slower quality mode
+  pd180           180            720     640   m1         High-detail mission snapshot
+  fax480          180            720     512   m1         High-detail, test windows
+
+Mode image_width
+  Each mode encodes at a specific pixel width.  SlowFrame scales the captured
+  image to this width before encoding.  The aspect handling (--aspect) controls
+  how the camera's 4:3 frame is fitted to the mode canvas.
+>>>>>>> cbbea99 (HAB SSTV)
 
 Cooldown scaling
   All cooldown values are multiplied by --cooldown-scale at runtime.
@@ -3851,6 +4166,7 @@ TOPIC: schedule
 ===============
 During a HAB mission the script transmits on a rotating schedule of SSTV modes
 rather than always using the same mode.  This varies image quality, duty cycle,
+<<<<<<< HEAD
 and transmission frequency for different operational needs.
 
 Presets
@@ -3914,11 +4230,37 @@ Unavailable-mode fallback defaults
         1. The active schedule profile's unavailable_mode_fallback, when set.
         2. The global [mission] unavailable_mode_fallback.
         3. A final built-in safety fallback to r36, then the first available mode.
+=======
+and receiver-side interest across the flight.
+
+Presets
+  hab_climb    robot8bw -> robot12bw -> bw24 -> m4 -> robot12bw -> r36
+               Maximum update rate.  Monochrome-heavy to keep cooldowns short
+               during the steepest part of the climb.
+
+  hab_rapid    robot12bw -> m4 -> r36 -> robot12bw -> m4 -> pd50
+               Fast color bursts.  Best for upper ascent and the release phase
+               where update rate still matters but color shots are welcome.
+
+  hab_cruise   robot12bw -> r36 -> m2 -> pd90 -> s2 -> r72 -> m1  (default)
+               Mixes fast status frames with progressively higher-quality
+               images.  Good all-round choice for the full flight envelope.
+
+  hab_float    r36 -> pd90 -> robot12bw -> pd120 -> robot12bw -> pd180 -> r36 -> pd240
+               Quality-first.  Anchored by PD modes for float altitude or
+               slow-drift science windows.  Requires MMSSTV library; falls
+               back gracefully if unavailable.
+
+Selecting a preset
+  python3 pi_sstv.py --schedule hab_rapid
+  python3 pi_sstv.py --schedule hab_float --mmsstv-lib /path/to/libsstv_encoder.so
+>>>>>>> cbbea99 (HAB SSTV)
 
 Transmission gating
   A transmission only proceeds when ALL of the following are satisfied:
     1. At least --min-captures capture cycles have elapsed since the last TX
        (default: {min_captures}).
+<<<<<<< HEAD
         2. The selected cooldown method has expired (fixed, adaptive_dutycycle,
              adaptive_avg_dutycycle, or estimated), multiplied by --cooldown-scale.
 
@@ -3960,6 +4302,27 @@ EXAMPLES
 
   Maximum resolution detailed imagery:
     python3 pi_sstv.py --schedule high-res --cooldown-scale 1.5 --fixed-cooldown-seconds 1000
+=======
+    2. The per-mode cooldown for the resolved mode has expired, multiplied by
+       --cooldown-scale (default: {cooldown_scale}x).
+    3. The rolling duty-cycle budget has not been exceeded.
+       Budget = --duty-cycle * {window}s window (default: {duty_pct}% = {budget}s per hour).
+
+Duty-cycle protection
+  --duty-cycle FRACTION   Maximum TX fraction of the rolling window (0.0-1.0).
+                          Default: {duty_pct_raw} ({duty_pct}%).
+  --cooldown-scale FACTOR Multiply every mode's cooldown by this factor.
+                          1.0 = nominal, 0.75 = aggressive, 1.5 = conservative.
+  --min-captures N        Hard minimum captures between any two transmissions.
+                          Default: {min_captures}.
+
+EXAMPLES
+  Fast-color schedule, 200 captures, 8-second intervals:
+    python3 pi_sstv.py --schedule hab_rapid --total 200 --interval 8
+
+  Float schedule with conservative thermal protection:
+    python3 pi_sstv.py --schedule hab_float --cooldown-scale 1.5
+>>>>>>> cbbea99 (HAB SSTV)
 
   Inspect all presets and their mode sequences:
     python3 pi_sstv.py --list-schedules
@@ -3990,7 +4353,11 @@ and timing constants for the DRA818 module on the HamWing carrier board.
 GPIO pin assignments (BCM numbering):
   DRA818_PTT_PIN         = {ptt}   (physical pin 13)
   DRA818_POWER_DOWN_PIN  = {pd}    (physical pin 7)
+<<<<<<< HEAD
   DRA818_POWER_LEVEL_PIN = {hl}   (physical pin 15, default LOW = L / 0.5 W)
+=======
+  DRA818_POWER_LEVEL_PIN = {hl}   (physical pin 15)
+>>>>>>> cbbea99 (HAB SSTV)
   Audio PWM output pins  = GPIO{al} (left) / GPIO{ar} (right)
 
 Transmission sequence
@@ -4001,6 +4368,7 @@ Transmission sequence
   3. aplay         Stream the WAV file to the audio device
   4. wait          POST_PLAYBACK_DELAY_SECONDS ({post}s) after playback ends
   5. PTT -> HIGH   Unkey the transmitter
+<<<<<<< HEAD
   6. PD idle       Apply configured idle policy:
                                      release -> INPUT (Feather M0 owns final state)
                                      sleep   -> OUTPUT LOW (Pi-enforced sleep)
@@ -4020,6 +4388,9 @@ TX power and PD policy flags
             Controls PD line behavior after TX/PTT:
                 release = PD -> INPUT (shared control back to Feather M0)
                 sleep   = PD -> OUTPUT LOW (Pi-enforced idle power-save)
+=======
+  6. PD -> LOW     Return the DRA818 to power-down (radio off)
+>>>>>>> cbbea99 (HAB SSTV)
 
 PTT polarity
   The DRA818 PTT input is active-LOW.  Idle state is GPIO HIGH (line unkeyed).
@@ -4037,8 +4408,11 @@ Flags
   --no-tx        Skip the entire TX stage.  Images are captured and encoded
                  but aplay is never called and PTT is never keyed.  Safe for
                  bench testing without a radio connected.
+<<<<<<< HEAD
   --tx-power     Choose TX power level policy (low/high).
   --pd-idle      Choose PD idle policy after TX/PTT (release/sleep).
+=======
+>>>>>>> cbbea99 (HAB SSTV)
   --ptt-test     Key PTT for a short duration (default 1.0s) without audio,
                  to verify the GPIO control path end-to-end.
   --ptt-test N   Key PTT for N seconds.
@@ -4063,6 +4437,7 @@ EXTERNAL COMMANDS
       aplay --help
       man aplay
 
+<<<<<<< HEAD
     pinctrl  (GPIO inspection)
     Inspect or drive GPIO lines directly without running the full script:
             pinctrl get {ptt}              Read PTT pin state
@@ -4073,6 +4448,18 @@ EXTERNAL COMMANDS
     pinctl  (GPIO inspection command)
         Alternative GPIO inspection command spelling:
             pinctl get                     Dump state of all GPIO pins
+=======
+  raspi-gpio  (GPIO inspection)
+    Inspect or drive GPIO lines directly without running the full script:
+      raspi-gpio get {ptt}           Read PTT pin state
+      raspi-gpio get {pd}            Read power-down pin state
+      raspi-gpio set {ptt} op dh     Drive PTT HIGH (idle/safe)
+      raspi-gpio help
+
+  gpio  (RPi.GPIO / WiringPi fallback)
+    Alternative GPIO inspection tool if raspi-gpio is unavailable:
+      gpio readall                   Print full pin state table
+>>>>>>> cbbea99 (HAB SSTV)
 
 SEE ALSO
   --explain capture   Camera image acquisition
@@ -4087,10 +4474,17 @@ Pin assignments and wiring reference for the HamWing carrier board.
 All pin numbers use BCM (Broadcom) numbering unless noted.
 
 DRA818 control lines:
+<<<<<<< HEAD
     Signal   BCM GPIO   Physical Pin   Pi-Driven State            Notes
     PD       GPIO 4     Pin 7          HIGH during TX, INPUT idle Shared with Feather M0
     PTT      GPIO 27    Pin 13         HIGH (idle)  LOW (keyed)
     HL       GPIO 22    Pin 15         LOW (low-pwr) HIGH (high-pwr)
+=======
+  Signal   BCM GPIO   Physical Pin   Idle State   Active State
+  PD       GPIO 4     Pin 7          LOW (off)    HIGH (on)
+  PTT      GPIO 27    Pin 13         HIGH (idle)  LOW (keyed)
+  HL       GPIO 22    Pin 15         LOW (low-pwr) HIGH (high-pwr)
+>>>>>>> cbbea99 (HAB SSTV)
 
 Audio output (PWM via audremap overlay):
   Channel  BCM GPIO   Physical Pin
@@ -4117,6 +4511,7 @@ EXAMPLES
     python3 pi_sstv.py --ptt-test
 
 EXTERNAL COMMANDS
+<<<<<<< HEAD
     pinctrl  (read and set GPIO lines from the command line)
     Inspect or manually drive the DRA818 control pins to verify wiring
     without running the full script:
@@ -4130,6 +4525,21 @@ EXTERNAL COMMANDS
     pinctl  (GPIO inspection command)
         Dump GPIO pin states directly:
             pinctl get
+=======
+  raspi-gpio  (read and set GPIO lines from the command line)
+    Inspect or manually drive the DRA818 control pins to verify wiring
+    without running the full script:
+      raspi-gpio get                 Dump state of all GPIO pins
+      raspi-gpio get {ptt}           Read PTT pin (should be 1 = HIGH when idle)
+      raspi-gpio get {pd}            Read power-down pin (should be 0 = LOW at rest)
+      raspi-gpio set {ptt} op dh     Drive PTT HIGH safely
+      raspi-gpio set {pd} op dl      Drive PD LOW (radio off)
+      raspi-gpio help
+
+  gpio  (WiringPi fallback)
+    Print a full BCM/physical/WiringPi pin state table:
+      gpio readall
+>>>>>>> cbbea99 (HAB SSTV)
 
   pinout  (Raspberry Pi physical pin diagram)
     Print an ASCII pinout diagram of the board in the terminal:
@@ -4162,6 +4572,7 @@ Log format
   [YYYY-MM-DD HH:MM:SS] message
 
 Section headings
+<<<<<<< HEAD
     Major stages are emitted as framed sections with key/value summaries and
     explicit result footers. Typical headings include:
         Runtime Startup
@@ -4169,6 +4580,14 @@ Section headings
         Stage 1/3  Image Capture
         Stage 2/3  SSTV Encode
         Stage 3/3  Radio TX
+=======
+  Major pipeline phases are separated by titled section headers:
+    ========================================================
+      SlowFrame Capability Discovery
+    ========================================================
+  Individual capture cycles are headed:
+    --- Capture #N  YYYY-MM-DD HH:MM:SS ---
+>>>>>>> cbbea99 (HAB SSTV)
 
 EXAMPLES
   Run a mission with full debug logging to file and stdout:
@@ -4203,6 +4622,7 @@ SEE ALSO
   --explain capture   Capture stage status messages
   --explain encode    Encode stage status messages
   --explain tx        TX stage status messages
+<<<<<<< HEAD
     --explain env       Environment variable reference and precedence
 """,
 
@@ -4325,6 +4745,8 @@ SEE ALSO
     --explain mmsstv   MMSSTV library behavior and fallback chain
     --explain tx       Radio TX timing and playback path
     --explain logging  Runtime log outputs and diagnostics
+=======
+>>>>>>> cbbea99 (HAB SSTV)
 """,
 }
 
@@ -4348,6 +4770,7 @@ HELP_TOPIC_ALIASES = {
     "wiring":   "gpio",
     "log":      "logging",
     "debug":    "logging",
+<<<<<<< HEAD
     "env":      "env",
     "environment": "env",
     "vars":     "env",
@@ -4852,6 +5275,12 @@ def print_help_cli_overview():
         "  python3 pi_sstv.py preflight\n"
     )
 
+=======
+    "duty":     "schedule",
+    "cooldown": "schedule",
+}
+
+>>>>>>> cbbea99 (HAB SSTV)
 
 def print_explain(topic: str):
     canonical = HELP_TOPIC_ALIASES.get(topic.lower(), topic.lower())
@@ -4860,7 +5289,10 @@ def print_explain(topic: str):
         valid = sorted(set(HELP_TOPICS.keys()) | set(HELP_TOPIC_ALIASES.keys()))
         print(f"Unknown topic: '{topic}'")
         print(f"Available topics: {', '.join(valid)}")
+<<<<<<< HEAD
         print("Tip: run 'python3 pi_sstv.py --help-topics' for a structured topic index.")
+=======
+>>>>>>> cbbea99 (HAB SSTV)
         sys.exit(1)
     # Substitute live script constants into topics that reference them.
     text = text.format(
@@ -4870,8 +5302,15 @@ def print_explain(topic: str):
         quality=RPICAM_QUALITY,
         min_captures=MIN_CAPTURES_BETWEEN_TRANSMISSIONS,
         cooldown_scale=COOLDOWN_SCALE_FACTOR,
+<<<<<<< HEAD
         duty_pct=int(MAX_TRANSMIT_DUTY_CYCLE * 100),
         duty_pct_raw=MAX_TRANSMIT_DUTY_CYCLE,
+=======
+        window=ROLLING_DUTY_CYCLE_WINDOW_SECONDS,
+        duty_pct=int(MAX_TRANSMIT_DUTY_CYCLE * 100),
+        duty_pct_raw=MAX_TRANSMIT_DUTY_CYCLE,
+        budget=int(ROLLING_DUTY_CYCLE_WINDOW_SECONDS * MAX_TRANSMIT_DUTY_CYCLE),
+>>>>>>> cbbea99 (HAB SSTV)
         ptt=DRA818_PTT_PIN,
         pd=DRA818_POWER_DOWN_PIN,
         hl=DRA818_POWER_LEVEL_PIN,
@@ -4881,6 +5320,7 @@ def print_explain(topic: str):
         ptt_delay=PTT_KEY_DELAY_SECONDS,
         post=POST_PLAYBACK_DELAY_SECONDS,
     )
+<<<<<<< HEAD
     header = _render_structured_explain_header(canonical)
     if header:
         print(header + text)
@@ -4924,6 +5364,92 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
         "  python3 pi_sstv.py --help-flight\n"
         "  python3 pi_sstv.py --help-examples\n"
         "  python3 pi_sstv.py --help-topics\n"
+=======
+    print(text)
+
+
+def parse_args():
+    description = (
+        "pi_sstv.py  —  HamWing SSTV HAB payload controller\n"
+        + "=" * 56 + "\n\n"
+        "Captures images with rpicam-still (OV5647), encodes them to SSTV\n"
+        "audio using SlowFrame, and transmits over a DRA818 VHF module on\n"
+        "the HamWing carrier board.\n\n"
+        "Pipeline stages:\n"
+        "  1. capture   rpicam-still  ->  JPEG image\n"
+        "  2. encode    SlowFrame     ->  WAV audio (SSTV format)\n"
+        "  3. transmit  aplay + GPIO  ->  DRA818 over-the-air TX\n\n"
+        "Operating modes:\n"
+        "  mission      Continuous capture-and-transmit loop (default when\n"
+        "               --config or mission flags are supplied).\n"
+        "  --test MODE  Single-shot pipeline validation for one SSTV mode.\n"
+        "  --ptt-test   GPIO PTT/PD keying verification without audio.\n\n"
+        "Configuration:\n"
+        "  Settings can be provided via a .cfg file (--config), CLI flags,\n"
+        "  or a mix of both.  CLI flags always override the config file.\n"
+        "  Generate a documented template:  python3 pi_sstv.py --generate-config\n\n"
+        "Reference documentation:\n"
+        "  python3 pi_sstv.py --explain <topic>\n"
+        "  Topics: capture  encode  overlay  mmsstv  modes  schedule  tx  gpio  logging"
+    )
+    epilog = (
+        "QUICK START\n"
+        "  Generate a config file and edit it for your callsign and schedule:\n"
+        "    python3 pi_sstv.py --generate-config\n"
+        "    nano /home/pi-user/pi_sstv.cfg\n"
+        "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n\n"
+        "MISSION EXAMPLES\n"
+        "  Normal HAB mission — balanced schedule, default settings:\n"
+        "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n\n"
+        "  Mission with callsign overlay, rapid schedule, 200 captures at 8s intervals:\n"
+        "    python3 pi_sstv.py --schedule hab_rapid --callsign W1AW-11 --total 200 --interval 8\n\n"
+        "  Float schedule with MMSSTV library enabled:\n"
+        "    python3 pi_sstv.py --schedule hab_float --mmsstv-lib /opt/mmsstv/lib/libsstv_encoder.so\n\n"
+        "  Conservative thermal profile (1.5x cooldowns, 100 captures):\n"
+        "    python3 pi_sstv.py --total 100 --cooldown-scale 1.5\n\n"
+        "  Mission logging to file only (suppress stdout):\n"
+        "    python3 pi_sstv.py --quiet-log-file /home/pi-user/mission.log\n\n"
+        "PIPELINE TEST EXAMPLES\n"
+        "  Test r36 encode + TX (full pipeline, radio connected):\n"
+        "    python3 pi_sstv.py --test r36\n\n"
+        "  Test pd90 encode only — no TX, safe bench test:\n"
+        "    python3 pi_sstv.py --test pd90 --no-tx\n\n"
+        "  Test with an existing image instead of the camera:\n"
+        "    python3 pi_sstv.py --test m1 --test-image /home/pi-user/photo.jpg --no-tx\n\n"
+        "  Test with callsign overlay and debug logging:\n"
+        "    python3 pi_sstv.py --test r36 --callsign W1AW-11 --no-tx --debug\n\n"
+        "GPIO / RADIO TESTS\n"
+        "  Key PTT for 1 second to verify DRA818 GPIO wiring:\n"
+        "    python3 pi_sstv.py --ptt-test\n\n"
+        "  Key PTT for a custom duration:\n"
+        "    python3 pi_sstv.py --ptt-test 0.5\n\n"
+        "REFERENCE / INSPECTION\n"
+        "  List all SSTV mode profiles (duration, cooldown, MMSSTV requirements):\n"
+        "    python3 pi_sstv.py --list-modes\n\n"
+        "  List all transmit schedule presets and mode sequences:\n"
+        "    python3 pi_sstv.py --list-schedules\n\n"
+        "  Show detailed documentation for a pipeline topic:\n"
+        "    python3 pi_sstv.py --explain capture\n"
+        "    python3 pi_sstv.py --explain mmsstv\n"
+        "    python3 pi_sstv.py --explain schedule\n"
+        "    python3 pi_sstv.py --explain tx\n\n"
+        "MMSSTV LIBRARY\n"
+        "  Enable MMSSTV modes (pd50, pd90, pd120, pd160, pd180, fax480, robot8bw, robot12bw):\n"
+        "    export MMSSTV_LIB_PATH=/path/to/libsstv_encoder.so\n"
+        "    python3 pi_sstv.py --test pd90 --no-tx\n\n"
+        "  Or pass it directly:\n"
+        "    python3 pi_sstv.py --mmsstv-lib /path/to/libsstv_encoder.so --test pd90 --no-tx\n\n"
+        "  Disable MMSSTV (native SlowFrame modes only):\n"
+        "    python3 pi_sstv.py --no-mmsstv\n\n"
+        "CONFIGURATION FILE\n"
+        "  Generate a fully-documented default config template:\n"
+        "    python3 pi_sstv.py --generate-config\n"
+        "    python3 pi_sstv.py --generate-config /path/to/custom.cfg\n\n"
+        "  Load the config file at runtime:\n"
+        "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n\n"
+        "  CLI flags always override config file values:\n"
+        "    python3 pi_sstv.py --config pi_sstv.cfg --schedule hab_rapid --callsign W1AW-11\n"
+>>>>>>> cbbea99 (HAB SSTV)
     )
 
     parser = argparse.ArgumentParser(
@@ -4973,6 +5499,17 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
         "--help-all",
         action="store_true",
         help="Show full argparse option reference (long form) and exit.",
+    )
+    mode_group.add_argument(
+        "--explain",
+        metavar="TOPIC",
+        default=None,
+        help=(
+            "Print detailed reference documentation for a pipeline topic and exit. "
+            "Topics: capture, encode, overlay, mmsstv, modes, schedule, tx, gpio, logging. "
+            "Aliases are accepted (e.g. camera, radio, lib, wiring). "
+            "Example: python3 pi_sstv.py --explain mmsstv"
+        ),
     )
     mode_group.add_argument(
         "--test",
@@ -5380,6 +5917,7 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
         help="Write log output only to this file and suppress stdout log output.",
     )
 
+<<<<<<< HEAD
     # --- ALSA / volume guardrails ---
     alsa_group = parser.add_argument_group(
         "ALSA / VOLUME",
@@ -5534,6 +6072,38 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
             # Keep argparse resilient when SlowFrame is unavailable during option parsing.
             pass
 
+=======
+    # --- Configuration file ---
+    cfg_group = parser.add_argument_group(
+        "configuration file",
+        "Load pipeline settings from a .cfg file.  CLI flags always override config file values.",
+    )
+    cfg_group.add_argument(
+        "--config",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Load pipeline settings from PATH before applying any CLI overrides. "
+            "Use --generate-config to create a fully-documented template. "
+            f"Default search path (if not specified): {DEFAULT_CONFIG_PATH}"
+        ),
+    )
+    cfg_group.add_argument(
+        "--generate-config",
+        metavar="PATH",
+        nargs="?",
+        const=DEFAULT_CONFIG_PATH,
+        default=None,
+        help=(
+            "Write a fully-documented default configuration file to PATH and exit. "
+            f"If PATH is omitted, writes to {DEFAULT_CONFIG_PATH}. "
+            "Edit the file then run:  python3 pi_sstv.py --config PATH"
+        ),
+    )
+
+    args = parser.parse_args()
+
+>>>>>>> cbbea99 (HAB SSTV)
     if args.test and args.test not in MODE_PROFILES:
         parser.error(
             f"--test: unknown mode '{args.test}'. "
@@ -5541,6 +6111,7 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
             "Run --list-modes for details."
         )
 
+<<<<<<< HEAD
     if args.test_panels is not None and args.test_panels and args.test_panels not in MODE_PROFILES:
         parser.error(
             f"--test-panels: unknown mode '{args.test_panels}'. "
@@ -5577,6 +6148,10 @@ def parse_args_legacy(argv: Optional[List[str]] = None):
 
     if args.gps_test is not None and args.gps_test <= 0:
         parser.error("--gps-test duration must be > 0 seconds")
+=======
+    if args.test and args.ptt_test is not None:
+        parser.error("--test and --ptt-test cannot be used together")
+>>>>>>> cbbea99 (HAB SSTV)
 
     if args.ptt_test is not None and args.ptt_test <= 0:
         parser.error("--ptt-test duration must be > 0 seconds")
@@ -5899,6 +6474,7 @@ def list_modes():
 
 
 def list_schedules():
+<<<<<<< HEAD
     def _estimate_mode_cooldown_seconds(profile: ModeProfile) -> float:
         method = _normalize_cooldown_method(TX_COOLDOWN_METHOD)
         ratio = _duty_cooldown_ratio()
@@ -6070,6 +6646,72 @@ def list_schedules():
     print("  Example commands:")
     print("    python3 pi_sstv.py --schedule native-balanced --cooldown-method adaptive_dutycycle --duty-cycle 0.50")
     print("    python3 pi_sstv.py --schedule high-res --cooldown-method fixed --fixed-cooldown-seconds 45 --min-captures 1")
+=======
+    WIDE  = "═" * 66
+    THIN  = "─" * 66
+    print("Schedule presets\n")
+    for preset_name, modes in TRANSMIT_SCHEDULE_PROFILES.items():
+        is_active    = preset_name == TRANSMIT_SCHEDULE_PROFILE
+        active_tag   = "  ◀ active" if is_active else ""
+        description  = TRANSMIT_SCHEDULE_DESCRIPTIONS.get(preset_name, "")
+        profiles     = [MODE_PROFILES[m] for m in modes if m in MODE_PROFILES]
+
+        total_tx    = sum(p.duration_seconds for p in profiles)
+        total_cool  = sum(p.cooldown_seconds  for p in profiles)
+        total_cycle = total_tx + total_cool
+        duty        = 100.0 * total_tx / total_cycle if total_cycle else 0.0
+        cycle_min   = total_cycle / 60.0
+        mmsstv_steps = [p for p in profiles if p.requires_mmsstv]
+
+        # Deduplicate fallback pairs for the summary (preserve insertion order)
+        seen_fb: dict = {}
+        for p in mmsstv_steps:
+            key = f"{p.name} -> {p.fallback_mode}"
+            seen_fb[key] = True
+        unique_fb = list(seen_fb.keys())
+
+        # ── header ────────────────────────────────────────────────────────────
+        print(f"  {WIDE}")
+        print(f"  {preset_name.upper()}{active_tag}")
+        if description:
+            # wrap description to ~62 chars
+            words, line = description.split(), ""
+            for w in words:
+                if len(line) + len(w) + 1 > 62:
+                    print(f"  {line}")
+                    line = w
+                else:
+                    line = (line + " " + w).lstrip()
+            if line:
+                print(f"  {line}")
+        print(f"  {THIN}")
+
+        # ── step table ────────────────────────────────────────────────────────
+        print(f"  {'#':>2}  {'Mode':<12}  {'TX (s)':>6}  {'Cool (s)':>8}  "
+              f"{'Gap (s)':>7}  {'MMSSTV':>6}  Fallback")
+        print(f"  {'':>2}  {'':12}  {'------':>6}  {'--------':>8}  "
+              f"{'-------':>7}  {'------':>6}")
+        for i, p in enumerate(profiles, 1):
+            gap        = p.duration_seconds + p.cooldown_seconds
+            mmsstv_str = "yes" if p.requires_mmsstv else "-"
+            fb_str     = p.fallback_mode or "-"
+            print(f"  {i:>2}  {p.name:<12}  {p.duration_seconds:>6}  "
+                  f"{p.cooldown_seconds:>8}  {gap:>7}  {mmsstv_str:>6}  {fb_str}")
+        print(f"  {THIN}")
+
+        # ── summary block ─────────────────────────────────────────────────────
+        print(f"  {'Steps':22}: {len(profiles)}")
+        print(f"  {'Total airtime':22}: {total_tx} s")
+        print(f"  {'Total cooldown':22}: {total_cool} s")
+        print(f"  {'Min rotation time':22}: {total_cycle} s  ({cycle_min:.1f} min)")
+        print(f"  {'Max duty cycle':22}: {duty:.1f}%")
+        if mmsstv_steps:
+            print(f"  {'MMSSTV library needed':22}: yes")
+            print(f"  {'Fallbacks (unique)':22}: {',  '.join(unique_fb)}")
+        else:
+            print(f"  {'MMSSTV library needed':22}: no")
+        print()
+>>>>>>> cbbea99 (HAB SSTV)
 
 
 def wait_for_file(path, timeout=5):
@@ -6086,6 +6728,7 @@ def build_text_overlay(text, size, position, color, background_color=None, backg
     overlay_parts = [
         text,
         f"size={size}",
+<<<<<<< HEAD
         f"color={color}",
     ]
     if background_color:
@@ -6100,6 +6743,17 @@ def build_text_overlay(text, size, position, color, background_color=None, backg
         overlay_parts.append(f"bg-opacity={background_opacity}")
         overlay_parts.append(f"bgbar-opacity={background_opacity}")
     overlay_parts.append(f"pos={position}")
+=======
+        f"pos={position}",
+        f"color={color}",
+    ]
+
+    if background_color:
+        overlay_parts.append(f"bg={background_color}")
+        if background_opacity is not None:
+            overlay_parts.append(f"opacity={background_opacity}")
+
+>>>>>>> cbbea99 (HAB SSTV)
     return "|".join(overlay_parts)
 
 
@@ -6219,6 +6873,7 @@ def discover_slowframe_capabilities():
     output = "\n".join(filter(None, [result.stdout, result.stderr]))
     log_debug(f"SlowFrame -L raw output:\n{output}")
 
+<<<<<<< HEAD
     discovered_native, discovered_mmsstv, auto_profiled_modes = _augment_mode_profiles_from_slowframe_output(output)
     state.available_modes.update(discovered_native)
     state.available_modes.update(discovered_mmsstv)
@@ -6232,6 +6887,15 @@ def discover_slowframe_capabilities():
 
     mmsstv_status = "MMSSTV enabled" if state.mmsstv_library_detected else "native-only"
     native_modes = sorted(discovered_native or get_native_modes())
+=======
+    for line in output.splitlines():
+        mode_match = re.match(r"^([a-z0-9_]+)\s+-", line.strip().lower())
+        if mode_match:
+            state.available_modes.add(mode_match.group(1))
+
+    mmsstv_status = "MMSSTV enabled" if state.mmsstv_library_detected else "native-only"
+    native_modes = sorted(get_native_modes())
+>>>>>>> cbbea99 (HAB SSTV)
 
     # If the MMSSTV library was detected, add all known MMSSTV mode profiles to
     # available_modes directly.  The -L listing does not enumerate MMSSTV modes
@@ -6241,6 +6905,7 @@ def discover_slowframe_capabilities():
             if profile.requires_mmsstv:
                 state.available_modes.add(name)
 
+<<<<<<< HEAD
     mmsstv_modes = sorted(
         m
         for m in state.available_modes
@@ -6268,6 +6933,18 @@ def discover_slowframe_capabilities():
             log("  MMSSTV mode details:")
             for row in detail_rows:
                 log(row)
+=======
+    mmsstv_modes = sorted(m for m in state.available_modes if m not in native_modes)
+    log(f"SlowFrame discovery: {len(state.available_modes)} modes available ({mmsstv_status})")
+    log(f"  native : {', '.join(native_modes)}")
+    if mmsstv_modes:
+        log(f"  mmsstv : {', '.join(mmsstv_modes)}")
+        log("  MMSSTV mode details:")
+        for mode_name in mmsstv_modes:
+            profile = MODE_PROFILES.get(mode_name)
+            if profile:
+                log(f"    {profile.name:<12}  {profile.duration_seconds:>4}s TX  {profile.description}")
+>>>>>>> cbbea99 (HAB SSTV)
     else:
         log("  mmsstv : none (library not loaded)")
 
@@ -6292,6 +6969,7 @@ def resolve_mode_name(requested_mode, available_modes, default_fallback_mode: Op
     current_mode = requested_mode
     visited_modes = set()
 
+<<<<<<< HEAD
     while True:
         while current_mode and current_mode not in visited_modes:
             visited_modes.add(current_mode)
@@ -6328,6 +7006,38 @@ def resolve_mode_name(requested_mode, available_modes, default_fallback_mode: Op
 
     fallback = next(iter(sorted(available_modes)))
     log(f"Mode resolution: no configured default available for {requested_mode}; using first available mode: {fallback}")
+=======
+    while current_mode and current_mode not in visited_modes:
+        visited_modes.add(current_mode)
+        if current_mode in available_modes:
+            if current_mode != requested_mode:
+                log(f"Mode resolution: {requested_mode} → {current_mode} (fallback)")
+            return current_mode
+
+        current_profile = MODE_PROFILES.get(current_mode)
+
+        # Emit a specific warning when an MMSSTV mode is unavailable so the
+        # operator knows exactly why the fallback is happening.
+        if current_profile and current_profile.requires_mmsstv:
+            log(
+                f"Mode resolution: {current_mode} requires MMSSTV library but it is not available"
+                + (f"; use --mmsstv-lib to provide the library path" if current_mode == requested_mode else "")
+            )
+        else:
+            log_debug(f"Mode resolution: {current_mode} not available, trying fallback")
+
+        next_mode = current_profile.fallback_mode if current_profile else None
+        if next_mode:
+            log_debug(f"Mode resolution: trying fallback: {next_mode}")
+        current_mode = next_mode
+
+    if "r36" in available_modes:
+        log(f"Mode resolution: fallback chain exhausted for {requested_mode}, using r36")
+        return "r36"
+
+    fallback = next(iter(sorted(available_modes)))
+    log(f"Mode resolution: r36 unavailable, using first available mode: {fallback}")
+>>>>>>> cbbea99 (HAB SSTV)
     return fallback
 
 
@@ -6594,6 +7304,7 @@ def select_mode_profile(runtime_state):
     return requested_mode, MODE_PROFILES[resolved_mode]
 
 
+<<<<<<< HEAD
 def _scaled_overlay_size(mode_name: str, base_size: int, minimum_size: int = 8) -> int:
     """Scale overlay font by mode geometry and TX duration for on-air readability."""
     profile = MODE_PROFILES.get(mode_name)
@@ -6689,6 +7400,14 @@ def _build_compact_overlay_text(
 
 def build_slowframe_command(input_path, output_path, timestamp_message, mode_name, gps_text: Optional[str] = None):
     protocol_token = get_protocol_token_for_mode(mode_name)
+=======
+def _scaled_overlay_size(image_width: int, base_size: int) -> int:
+    """Scale a font size proportionally to image width, anchored at 320px."""
+    return max(8, round(base_size * image_width / 320))
+
+
+def build_slowframe_command(input_path, output_path, timestamp_message, mode_name):
+>>>>>>> cbbea99 (HAB SSTV)
     command = [
         SLOWFRAME_BIN,
         "-i", input_path,
@@ -6702,6 +7421,7 @@ def build_slowframe_command(input_path, output_path, timestamp_message, mode_nam
     if SLOWFRAME_VERBOSE:
         command.append("-v")
 
+<<<<<<< HEAD
     if STATION_CALLSIGN:
         compact_layout = _use_compact_overlay_layout(mode_name)
         if compact_layout:
@@ -6718,22 +7438,54 @@ def build_slowframe_command(input_path, output_path, timestamp_message, mode_nam
             overlay_size = _scaled_overlay_size(mode_name, SLOWFRAME_TIMESTAMP_OVERLAY_SIZE, minimum_size=10)
             overlay_text = f"{STATION_CALLSIGN}  {build_overlay_text(mode_name, timestamp_message, gps_text=gps_text)}"
 
+=======
+    mode_width = MODE_PROFILES[mode_name].image_width if mode_name in MODE_PROFILES else 320
+    if SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY:
+        # When a callsign overlay is also enabled, merge it into the timestamp overlay
+        # as a prefix.  SlowFrame renders all -T overlays at the same position
+        # regardless of the pos= value on secondary overlays, so separate overlay
+        # arguments for callsign and timestamp end up on top of each other.
+        if SLOWFRAME_ENABLE_CALLSIGN_OVERLAY and STATION_CALLSIGN:
+            overlay_text = f"{STATION_CALLSIGN}  {timestamp_message}"
+        else:
+            overlay_text = timestamp_message
+>>>>>>> cbbea99 (HAB SSTV)
         command.extend([
             "-T",
             build_text_overlay(
                 text=overlay_text,
+<<<<<<< HEAD
                 size=overlay_size,
+=======
+                size=_scaled_overlay_size(mode_width, SLOWFRAME_TIMESTAMP_OVERLAY_SIZE),
+>>>>>>> cbbea99 (HAB SSTV)
                 position=SLOWFRAME_TIMESTAMP_OVERLAY_POSITION,
                 color=SLOWFRAME_TIMESTAMP_OVERLAY_COLOR,
                 background_color=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_COLOR,
                 background_opacity=SLOWFRAME_TIMESTAMP_OVERLAY_BACKGROUND_OPACITY,
             ),
         ])
+<<<<<<< HEAD
+=======
+    elif SLOWFRAME_ENABLE_CALLSIGN_OVERLAY and STATION_CALLSIGN:
+        # Timestamp overlay off but callsign overlay on — emit callsign alone.
+        command.extend([
+            "-T",
+            build_text_overlay(
+                text=STATION_CALLSIGN,
+                size=_scaled_overlay_size(mode_width, SLOWFRAME_CALLSIGN_OVERLAY_SIZE),
+                position=SLOWFRAME_CALLSIGN_OVERLAY_POSITION,
+                color=SLOWFRAME_CALLSIGN_OVERLAY_COLOR,
+                background_color=SLOWFRAME_CALLSIGN_OVERLAY_BACKGROUND_COLOR,
+            ),
+        ])
+>>>>>>> cbbea99 (HAB SSTV)
 
     return command
 
 
 def setup_gpio():
+<<<<<<< HEAD
     log_debug(f"GPIO setup: mode=BCM, VHF_PTT={DRA818_PTT_PIN}, UHF_PTT={DRA818_UHF_PTT_PIN}, PD={DRA818_POWER_DOWN_PIN}, HL={DRA818_POWER_LEVEL_PIN}")
     GPIO.cleanup()                                                  # clear any stale state from a previous run
     GPIO.setmode(GPIO_PIN_MODE)
@@ -6750,6 +7502,15 @@ def setup_gpio():
         "GPIO setup complete: "
         f"VHF_PTT=INPUT_PULLUP, UHF_PTT=INPUT_PULLUP, HL={TX_POWER_LEVEL.upper()}, PD_IDLE={PD_IDLE_MODE.upper()}"
     )
+=======
+    log_debug(f"GPIO setup: mode=BCM, PTT={DRA818_PTT_PIN}, PD={DRA818_POWER_DOWN_PIN}, HL={DRA818_POWER_LEVEL_PIN}")
+    GPIO.cleanup()                                                 # clear any stale state from a previous run
+    GPIO.setmode(GPIO_PIN_MODE)
+    GPIO.setup(DRA818_PTT_PIN, GPIO.OUT, initial=GPIO.HIGH)       # PTT idle = HIGH (unkeyed)
+    GPIO.setup(DRA818_POWER_LEVEL_PIN, GPIO.OUT, initial=GPIO.LOW) # HL LOW = low power
+    GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.LOW)  # PD LOW = radio off
+    log_debug("GPIO setup complete: PTT=HIGH(idle), HL=LOW(low-power), PD=LOW(off)")
+>>>>>>> cbbea99 (HAB SSTV)
 
 
 def apply_tx_power_level() -> None:
@@ -6794,6 +7555,7 @@ def capture_image(output_path, stage_label: Optional[str] = None):
         "--awb", RPICAM_AWB,
         "--lens-position", "0",
     ]
+<<<<<<< HEAD
     stage_title = f"{stage_label}  Image Capture" if stage_label else "Image Capture"
     log_stage_header(
         stage_title,
@@ -6807,6 +7569,10 @@ def capture_image(output_path, stage_label: Optional[str] = None):
             ("focus", "fixed-infinity"),
         ],
     )
+=======
+    log(f"Capture: metering={RPICAM_METERING}  exposure={RPICAM_EXPOSURE}  awb={RPICAM_AWB}  quality={RPICAM_QUALITY}  lens=fixed-infinity")
+    log(f"Capture: output -> {output_path}")
+>>>>>>> cbbea99 (HAB SSTV)
     log_debug(f"rpicam-still command: {' '.join(cmd)}")
     try:
         if logger.isEnabledFor(logging.DEBUG):
@@ -6817,6 +7583,7 @@ def capture_image(output_path, stage_label: Optional[str] = None):
         # Watchdog ping: camera capture completed successfully
         sd_notify("WATCHDOG=1")
         size = os.path.getsize(output_path)
+<<<<<<< HEAD
         log_stage_footer("PASS", [("image", output_path), ("size", f"{size:,} bytes")])
         return output_path
     except CalledProcessError as error:
@@ -6831,6 +7598,12 @@ def capture_image(output_path, stage_label: Optional[str] = None):
                 ("fallback", TEST_IMAGE),
             ],
         )
+=======
+        log(f"Capture: OK  {size:,} bytes")
+        return output_path
+    except Exception as error:
+        log(f"Capture: FAILED ({error}); falling back to test image: {TEST_IMAGE}")
+>>>>>>> cbbea99 (HAB SSTV)
         return TEST_IMAGE
     except Exception as error:
         set_status_led_state("error")
@@ -7201,6 +7974,7 @@ def generate_sstv_audio(image_path, timestamp_message, mode_name, wav_path=None,
     encode_failed = False
     output = wav_path or SSTV_WAV
     profile = MODE_PROFILES.get(mode_name)
+<<<<<<< HEAD
     expected_duration = profile.duration_seconds if profile else "?"
     overlay_desc = describe_overlay(mode_name, timestamp_message, gps_text=gps_text)
     stage_title = f"{stage_label}  SSTV Encode" if stage_label else "SSTV Encode"
@@ -7216,6 +7990,27 @@ def generate_sstv_audio(image_path, timestamp_message, mode_name, wav_path=None,
     )
 
     cmd = build_slowframe_command(image_path, output, timestamp_message, mode_name, gps_text=gps_text)
+=======
+    mode_width = profile.image_width if profile else 320
+    expected_duration = profile.duration_seconds if profile else "?"
+
+    # Describe overlay configuration
+    if SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY and SLOWFRAME_ENABLE_CALLSIGN_OVERLAY and STATION_CALLSIGN:
+        overlay_desc = f"timestamp+callsign  text='{STATION_CALLSIGN}  {timestamp_message}'"
+    elif SLOWFRAME_ENABLE_TIMESTAMP_OVERLAY:
+        overlay_desc = f"timestamp  text='{timestamp_message}'"
+    elif SLOWFRAME_ENABLE_CALLSIGN_OVERLAY and STATION_CALLSIGN:
+        overlay_desc = f"callsign  text='{STATION_CALLSIGN}'"
+    else:
+        overlay_desc = "none"
+
+    log(f"Encode: mode={mode_name}  image={mode_width}px wide  ~{expected_duration}s TX")
+    log(f"Encode: format={SLOWFRAME_AUDIO_FORMAT}  rate={SLOWFRAME_SAMPLE_RATE}Hz  aspect={SLOWFRAME_ASPECT_MODE}")
+    log(f"Encode: overlay={overlay_desc}")
+    log(f"Encode: output -> {output}")
+
+    cmd = build_slowframe_command(image_path, output, timestamp_message, mode_name)
+>>>>>>> cbbea99 (HAB SSTV)
     log_debug(f"SlowFrame command: {' '.join(cmd)}")
     try:
         run(cmd, check=True)
@@ -7258,12 +8053,16 @@ def generate_sstv_audio(image_path, timestamp_message, mode_name, wav_path=None,
             set_status_led_state("idle")
 
     size = os.path.getsize(output)
+<<<<<<< HEAD
     overlay_jpg = os.path.splitext(output)[0] + ".jpg"
     footer_fields = [("image", image_path)]
     if os.path.isfile(overlay_jpg):
         footer_fields.append(("overlay", overlay_jpg))
     footer_fields += [("wav", output), ("size", f"{size:,} bytes")]
     log_stage_footer("PASS", footer_fields)
+=======
+    log(f"Encode: OK  {size:,} bytes")
+>>>>>>> cbbea99 (HAB SSTV)
     time.sleep(SSTV_CONVERSION_SETTLE_SECONDS)
 
 
@@ -7299,6 +8098,7 @@ def resolve_aplay_timeout_seconds(audio_path: str, expected_duration_seconds: Op
 def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float] = None, stage_label: Optional[str] = None):
     set_status_led_state("tx")
     audio_path = wav_path or SSTV_WAV
+<<<<<<< HEAD
     ptt_pins = get_active_ptt_pins()
     aplay_timeout = resolve_aplay_timeout_seconds(audio_path, expected_duration_seconds)
     stage_title = f"{stage_label}  Radio TX" if stage_label else "Radio TX"
@@ -7322,6 +8122,11 @@ def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float
         ],
     )
     log("TX: PD -> OUTPUT HIGH (Pi claims line, radio wake)")
+=======
+    log(f"TX: file={audio_path}")
+    log(f"TX: wake_delay={RADIO_WAKE_DELAY_SECONDS}s  ptt_key_delay={PTT_KEY_DELAY_SECONDS}s  post_playback_delay={POST_PLAYBACK_DELAY_SECONDS}s")
+    log("TX: PD -> HIGH (radio wake)")
+>>>>>>> cbbea99 (HAB SSTV)
     transmit_started_at = time.monotonic()
     selected_device: Optional[str] = None
     failure_reason: Optional[str] = None
@@ -7330,11 +8135,16 @@ def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float
     apply_tx_power_level()
     GPIO.setup(DRA818_POWER_DOWN_PIN, GPIO.OUT, initial=GPIO.HIGH)  # claim PD from Feather M0
     time.sleep(RADIO_WAKE_DELAY_SECONDS)
+<<<<<<< HEAD
     for pin in ptt_pins:
         claim_ptt_line(pin)
     log(f"TX: PTT -> LOW (keyed, pins {ptt_pins})")
     for pin in ptt_pins:
         GPIO.output(pin, GPIO.LOW)
+=======
+    log("TX: PTT -> LOW (keyed)")
+    GPIO.output(DRA818_PTT_PIN, GPIO.LOW)
+>>>>>>> cbbea99 (HAB SSTV)
     time.sleep(PTT_KEY_DELAY_SECONDS)
 
     try:
@@ -7375,6 +8185,7 @@ def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float
         raise
     finally:
         time.sleep(POST_PLAYBACK_DELAY_SECONDS)
+<<<<<<< HEAD
         log(f"TX: PTT -> HIGH (unkeyed, pins {ptt_pins})")
         for pin in ptt_pins:
             GPIO.output(pin, GPIO.HIGH)
@@ -7402,6 +8213,15 @@ def transmit_sstv_audio(wav_path=None, expected_duration_seconds: Optional[float
             log_stage_footer("PASS", footer_details)
             set_status_led_state("idle")
 
+=======
+        log("TX: PTT -> HIGH (unkeyed)")
+        GPIO.output(DRA818_PTT_PIN, GPIO.HIGH)
+        log("TX: PD -> LOW (radio off)")
+        GPIO.output(DRA818_POWER_DOWN_PIN, GPIO.LOW)
+
+    elapsed = time.monotonic() - transmit_started_at
+    log(f"TX: complete  {elapsed:.1f}s elapsed")
+>>>>>>> cbbea99 (HAB SSTV)
     return elapsed
 
 
@@ -7445,11 +8265,19 @@ def run_ptt_test(key_seconds: float):
 def process_capture(index):
     current_time = datetime.now()
     picture_time, capture_path = get_capture_path(current_time)
+<<<<<<< HEAD
     capture_label = f"Capture #{index + 1}"
     captured_image_path = capture_image(capture_path, stage_label=capture_label)
     timestamp_message = format_overlay_timestamp(current_time)
 
     write_csv(index + 1, picture_time)
+=======
+    log(f"--- Capture #{index + 1}  {current_time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+    captured_image_path = capture_image(capture_path)
+    timestamp_message = current_time.strftime("%Y.%m.%d - %H:%M:%S")
+
+    write_csv(index, picture_time)
+>>>>>>> cbbea99 (HAB SSTV)
 
     gps_text, gps_dt = _log_gps_pipeline_fix()
     if gps_dt is not None:
@@ -7663,12 +8491,17 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
     inspected.  Exits with code 0 on full success, 1 on any stage failure.
     """
     test_id = datetime.now(timezone.utc).strftime("TEST-%Y%m%d-%H%M%S")
+<<<<<<< HEAD
     output_dir = TIMESTAMPED_DIR or args.output_dir or BASE_DIR
     resolved_mode = resolve_mode_name(
         mode_name,
         runtime_state.available_modes,
         default_fallback_mode=get_effective_schedule_fallback_mode(),
     )
+=======
+    output_dir = args.output_dir
+    resolved_mode = resolve_mode_name(mode_name, runtime_state.available_modes)
+>>>>>>> cbbea99 (HAB SSTV)
     wav_path = os.path.join(output_dir, f"{test_id}-{resolved_mode}.wav")
 
     # Resolve the image source before printing the header so the logged path is accurate.
@@ -7679,6 +8512,7 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
         capture_path = os.path.join(output_dir, f"{test_id}-capture.jpg")
         capture_source = "camera"
 
+<<<<<<< HEAD
     log_stage_header(
         "Test Pipeline",
         [
@@ -7689,6 +8523,16 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
             ("tx", "disabled (--no-tx)" if args.no_tx else "enabled"),
         ],
     )
+=======
+    separator = "=" * 56
+    log_section("Test Pipeline")
+    log(f"  run-id  : {test_id}")
+    log(f"  mode    : {resolved_mode}" + (f"  (fallback from {mode_name})" if resolved_mode != mode_name else ""))
+    log(f"  capture : {capture_path}  [{capture_source}]")
+    log(f"  wav     : {wav_path}")
+    log(f"  no-tx   : {args.no_tx}")
+    log(separator)
+>>>>>>> cbbea99 (HAB SSTV)
 
     profile = MODE_PROFILES.get(resolved_mode)
     if not profile:
@@ -7696,6 +8540,7 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
         sys.exit(1)
 
     # --- Stage 1: Image capture ---
+<<<<<<< HEAD
     if args.test_image is not None:
         log_stage_header("Stage 1/3  Image Capture", [("source", "supplied image"), ("path", capture_path)])
         # User explicitly supplied an image — skip the camera entirely.
@@ -7707,10 +8552,24 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
     else:
         # Try the camera; fall back to the default test image on failure.
         captured = capture_image(capture_path, stage_label="Stage 1/3")
+=======
+    log("Stage 1/3  Image capture")
+    if args.test_image is not None:
+        # User explicitly supplied an image — skip the camera entirely.
+        if not os.path.isfile(capture_path):
+            log(f"  FAIL  --test-image path not found: {capture_path}")
+            sys.exit(1)
+        size = os.path.getsize(capture_path)
+        log(f"  PASS  {capture_path}  ({size:,} bytes)")
+    else:
+        # Try the camera; fall back to the default test image on failure.
+        captured = capture_image(capture_path)
+>>>>>>> cbbea99 (HAB SSTV)
         if captured != capture_path:
             if captured and os.path.isfile(captured):
                 capture_path = captured
                 size = os.path.getsize(capture_path)
+<<<<<<< HEAD
                 log(f"Stage 1/3 note: camera unavailable; using test image: {capture_path}  ({size:,} bytes)")
             else:
                 log_stage_footer("FAIL", [("reason", f"camera unavailable and no test image found: {TEST_IMAGE}")])
@@ -7720,6 +8579,19 @@ def run_test_pipeline(mode_name: str, args, runtime_state: RuntimeState):
     gps_text, gps_dt = _log_gps_pipeline_fix()
     overlay_time = gps_dt if gps_dt is not None else datetime.now(timezone.utc)
     timestamp_message = format_overlay_timestamp(overlay_time, is_test=True)
+=======
+                log(f"  NOTE  camera unavailable; using test image: {capture_path}  ({size:,} bytes)")
+            else:
+                log(f"  FAIL  camera unavailable and no test image found: {TEST_IMAGE}")
+                sys.exit(1)
+        else:
+            size = os.path.getsize(capture_path)
+            log(f"  PASS  {capture_path}  ({size:,} bytes)")
+
+    # --- Stage 2: SSTV encode ---
+    log("Stage 2/3  SSTV encode")
+    timestamp_message = datetime.now(timezone.utc).strftime("%Y.%m.%d - %H:%M:%S UTC [TEST]")
+>>>>>>> cbbea99 (HAB SSTV)
     try:
         generate_sstv_audio(
             capture_path,
@@ -7840,6 +8712,7 @@ def print_runtime_startup_summary(args):
 def print_mission_summary(runtime_state):
     mmsstv_status = "enabled" if runtime_state.mmsstv_library_detected else "disabled (native modes only)"
 
+<<<<<<< HEAD
     log_stage_header(
         "Mission Summary",
         [
@@ -7864,6 +8737,14 @@ def print_mission_summary(runtime_state):
             ("tx_timing", f"wake={RADIO_WAKE_DELAY_SECONDS}s  key={PTT_KEY_DELAY_SECONDS}s  post={POST_PLAYBACK_DELAY_SECONDS}s"),
         ],
     )
+=======
+    log_section("Mission")
+    log(f"Schedule: {TRANSMIT_SCHEDULE_PROFILE}")
+    log(f"MMSSTV: {mmsstv_status}")
+    log(f"Duty-cycle budget: {budget_seconds}s / {ROLLING_DUTY_CYCLE_WINDOW_SECONDS}s window ({int(MAX_TRANSMIT_DUTY_CYCLE * 100)}% max)")
+    log(f"Cooldown scale factor: {COOLDOWN_SCALE_FACTOR}x")
+    log(f"Capture interval: {PIC_INTERVAL}s, min {MIN_CAPTURES_BETWEEN_TRANSMISSIONS} between TX")
+>>>>>>> cbbea99 (HAB SSTV)
     log("Scheduled modes:")
 
     seen = set()
@@ -7885,6 +8766,7 @@ def print_mission_summary(runtime_state):
         fallback_note = f" [fallback from {mode_name}]" if resolved != mode_name else ""
         log(f"  {resolved:<12} {profile.duration_seconds:>4}s TX  {effective_cooldown:>5}s cooldown{fallback_note}")
 
+<<<<<<< HEAD
     log_stage_footer("READY")
 
 
@@ -7917,12 +8799,26 @@ def main():
             "\n"
             "  Legacy flag interface (still supported):\n"
             "\n"
+=======
+    log("=" * 56)
+
+
+def main():
+    # Show usage hint when called with no arguments at all.
+    if len(sys.argv) == 1:
+        print(
+            "pi_sstv.py  —  HamWing SSTV HAB payload controller\n"
+            "\n"
+            "No arguments provided.  Common starting points:\n"
+            "\n"
+>>>>>>> cbbea99 (HAB SSTV)
             "  Generate a config file (recommended first step):\n"
             f"    python3 pi_sstv.py --generate-config\n"
             "\n"
             "  Run a bench encode test (no radio required):\n"
             "    python3 pi_sstv.py --test r36 --no-tx\n"
             "\n"
+<<<<<<< HEAD
             "  Run dedicated panel/card test workflow:\n"
             "    python3 pi_sstv.py --test-panels pd50 --test-panel-source /home/pi-user/Desktop/pi_sstv/panels\n"
             "\n"
@@ -7930,10 +8826,13 @@ def main():
             "    python3 pi_sstv.py --led-test 1.5\n"
             "    python3 pi_sstv.py --gps-test 30\n"
             "\n"
+=======
+>>>>>>> cbbea99 (HAB SSTV)
             "  Start a live HAB mission with a config file:\n"
             "    python3 pi_sstv.py --config /home/pi-user/pi_sstv.cfg\n"
             "\n"
             "  Show full help and all options:\n"
+<<<<<<< HEAD
             "    python3 pi_sstv.py --help-all\n"
             "\n"
             "  Use guided operator help:\n"
@@ -7945,6 +8844,21 @@ def main():
         sys.exit(0)
 
     args = parse_args(cli_argv)
+=======
+            "    python3 pi_sstv.py --help\n"
+            "\n"
+            "  Show detailed documentation for a pipeline topic:\n"
+            "    python3 pi_sstv.py --explain capture\n"
+            "    python3 pi_sstv.py --explain mmsstv\n"
+            "    python3 pi_sstv.py --explain schedule\n"
+        )
+        sys.exit(0)
+
+    args = parse_args()
+    selected_log_file = args.quiet_log_file or args.log_file
+    quiet_stdout = args.quiet_log_file is not None
+    configure_logging(debug=args.debug, log_file=selected_log_file, quiet_stdout=quiet_stdout)
+>>>>>>> cbbea99 (HAB SSTV)
 
     # Info-only modes — no GPIO, no paths, no subprocess needed
     # For these short-lived modes, do NOT send READY=1 to systemd because they exit
@@ -7982,6 +8896,7 @@ def main():
         print_explain(args.explain)
         return
     if args.generate_config is not None:
+<<<<<<< HEAD
         output_path = args.generate_config
         if output_path == GENERATE_CONFIG_USE_CONFIG_PATH:
             output_path = args.config or DEFAULT_CONFIG_PATH
@@ -8001,6 +8916,14 @@ def main():
         log(f"Config: auto-loading default config at {config_path}")
     if config_path:
         load_config(config_path)
+=======
+        generate_default_config(args.generate_config)
+        return
+
+    # Apply config file settings (before CLI overrides so CLI always wins).
+    if args.config:
+        load_config(args.config)
+>>>>>>> cbbea99 (HAB SSTV)
 
     # Apply CLI overrides to module-level configuration
     global TRANSMIT_SCHEDULE, TRANSMIT_SCHEDULE_PROFILE
@@ -8020,6 +8943,7 @@ def main():
     global GPS_SYNC_SYSTEM_TIME
     global _GPS_STARTUP_INIT_ATTEMPTED
 
+<<<<<<< HEAD
     # Only apply CLI overrides if explicitly provided (not None) — config file values take priority
     if args.radio is not None:
         ACTIVE_RADIO_BAND = args.radio
@@ -8086,6 +9010,25 @@ def main():
         TEST_PANEL_COUNT = max(1, args.test_panel_count)
     if args.test_panels is not None and args.test_panels.strip():
         TEST_PANEL_DEFAULT_MODE = args.test_panels
+=======
+    TRANSMIT_SCHEDULE_PROFILE = args.schedule
+    TRANSMIT_SCHEDULE = TRANSMIT_SCHEDULE_PROFILES.get(args.schedule, TRANSMIT_SCHEDULE_PROFILES["hab_cruise"])
+    PIC_TOTAL = args.total
+    PIC_INTERVAL = args.interval
+    if args.callsign:
+        STATION_CALLSIGN = args.callsign
+        SLOWFRAME_ENABLE_CALLSIGN_OVERLAY = True
+    COOLDOWN_SCALE_FACTOR = args.cooldown_scale
+    MAX_TRANSMIT_DUTY_CYCLE = args.duty_cycle
+    MIN_CAPTURES_BETWEEN_TRANSMISSIONS = args.min_captures
+    SLOWFRAME_AUDIO_FORMAT = args.format
+    SLOWFRAME_SAMPLE_RATE = args.sample_rate
+    SLOWFRAME_ASPECT_MODE = args.aspect
+    TIMESTAMPED_DIR = args.output_dir
+    SLOWFRAME_BIN = args.slowframe
+    if args.test_image is not None:
+        TEST_IMAGE = args.test_image
+>>>>>>> cbbea99 (HAB SSTV)
     SSTV_WAV = os.path.join(TIMESTAMPED_DIR, "HAB-SSTV.wav")
 
     if args.no_mmsstv:
