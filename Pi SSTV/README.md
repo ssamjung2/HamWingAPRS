@@ -171,13 +171,14 @@ Pi GPIO12 and GPIO13 produce PWM audio. The HamWing board's passive RC filter co
 ```
 Pi GPIO12 / GPIO13 (PWM)
         |
-      [R1 270 ohm]     Series; with R2 shunt forms voltage divider (× 0.36 attenuation)
+        v
+   R1 (270 ohm)       Voltage divider: attenuates 3.3 V Pi swing to safe mic level
         |
-        +----[R2 150 ohm]----GND    Shunt resistor; sets output impedance
+   R2 (150 ohm)
         |
-        +----[C1 33 nF]-----GND    Shunt cap; LPF with R_th = R1||R2 = 96 ohm
-        |                           Cutoff ~50 kHz; far above highest SSTV tone (~2.5 kHz)
-      [C2 10 uF]               DC-blocking capacitor; removes bias voltage from the line
+   C1 (33 nF)         RC low-pass filter, cutoff ~11 kHz; well above highest SSTV tone (~2.5 kHz)
+        |
+   C2 (10 uF)         DC-blocking capacitor; removes any bias voltage from the line
         |
         v
    DRA818 MIC input

@@ -1,0 +1,57 @@
+[Unit]
+Description=HamWing SSTV mission — capture, encode, and transmit via SSTV
+# GPIO must be in safe state before this starts.
+After=hamwing-gpio-init.service multi-user.target
+Requires=hamwing-gpio-init.service
+# Ensure the service is started only after the system has reached multi-user
+# (i.e. the terminal is available) so GPIO, serial, and camera subsystems
+# are fully initialised.
+
+[Service]
+Type=notify
+User=pi-user
+WorkingDirectory=/home/pi-user
+
+# systemd watchdog — if pi_sstv.py does not call sd_notify("WATCHDOG=1") within
+# this window, systemd kills and restarts the service.  Set to 10 minutes to
+# exceed the worst-case capture + encode + transmit cycle time.
+WatchdogSec=600
+
+# Allow the main process to send READY=1 and WATCHDOG=1 notifications.
+NotifyAccess=main
+
+# ── Dependency paths ──────────────────────────────────────────────────────────
+# pi_sstv.py      /home/pi-user/Desktop/pi_sstv/pi_sstv.py
+# Config file     /home/pi-user/Desktop/pi_sstv/pi_sstv.cfg
+# SlowFrame bin   /home/pi-user/Desktop/Slowframe/bin/slowframe
+# MMSSTV dylib    /home/pi-user/Desktop/mmsstv-portable/bin/libsstv_encoder.so
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Expose the MMSSTV shared library so SlowFrame can load it at runtime.
+# Remove or comment this line if MMSSTV modes are not needed; SlowFrame will
+# fall back to its built-in native modes (bw24, m1, m2, r36, r72, s1, s2, sdx).
+Environment=MMSSTV_LIB_PATH=/home/pi-user/Desktop/mmsstv-portable/bin/libsstv_encoder.so
+
+# Make SlowFrame discoverable without a full PATH in the service environment.
+Environment=PATH=/home/pi-user/Desktop/Slowframe/bin:/usr/local/bin:/usr/bin:/bin
+
+# Load schedule and all mission settings from the .cfg file.
+# Any CLI flag appended here overrides the config at runtime.
+ExecStart=/usr/bin/python3 /home/pi-user/Desktop/pi_sstv/pi_sstv.py mission \
+    --config /home/pi-user/Desktop/pi_sstv/pi_sstv.cfg \
+    --mmsstv-lib /home/pi-user/Desktop/mmsstv-portable/bin/libsstv_encoder.so
+
+# Restart automatically if the script exits unexpectedly (e.g. camera fault,
+# transient GPIO error). Do not restart on a clean exit (mission complete).
+Restart=on-failure
+RestartSec=10
+
+# Keep stdout/stderr in the journal: journalctl -u pi-sstv -f
+StandardOutput=journal
+StandardError=journal
+
+# Give the script up to 30 s to shut down gracefully on stop/reboot.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
